@@ -1,0 +1,26 @@
+.env
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+.venv/
+venv/
+env/
+input/
+example_parts/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project outputs
+output/
+*.log
