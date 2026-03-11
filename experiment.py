@@ -691,6 +691,35 @@ def _load_iterations_from_env() -> Optional[int]:
         raise SystemExit("ITERATIONS in .env must be an integer.")
 
 
+def _load_int_from_env(name: str) -> Optional[int]:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise SystemExit(f"{name} in .env must be an integer.")
+
+
+def _load_bool_from_env(name: str) -> Optional[bool]:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return None
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    raise SystemExit(f"{name} in .env must be a boolean (true/false).")
+
+
+def _load_str_from_env(name: str) -> Optional[str]:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return None
+    return raw
+
+
 def cmd_iterate(args: argparse.Namespace) -> None:
     manifest_path = Path(args.manifest)
     transform_path = Path(args.transform)
@@ -702,9 +731,21 @@ def cmd_iterate(args: argparse.Namespace) -> None:
     if not config_path.exists():
         raise SystemExit(f"Config not found: {config_path}")
 
+    load_dotenv()
     iterations = args.iterations or _load_iterations_from_env()
     if not iterations:
         raise SystemExit("Iterations not provided. Use --iterations or set ITERATIONS in .env")
+
+    history_url = args.history_url or _load_str_from_env("HISTORY_URL")
+    if not history_url:
+        raise SystemExit("History URL not provided. Use --history-url or set HISTORY_URL in .env")
+
+    max_total_memory_gb = args.max_total_memory_gb or _load_int_from_env("MAX_TOTAL_MEMORY_GB") or 500
+    use_base_for_first = args.use_base_for_first
+    if not use_base_for_first:
+        use_base_for_first = _load_bool_from_env("USE_BASE_FOR_FIRST") or False
+
+    driver_container = args.driver_container or _load_str_from_env("DRIVER_CONTAINER")
 
     base_manifest = _read_yaml(manifest_path)
     driver = _get_driver_spec(base_manifest)
@@ -727,7 +768,7 @@ def cmd_iterate(args: argparse.Namespace) -> None:
         "executor.cores": {"min": 1, "max": 16},
         "executor.instances": {"min": 1, "max": 500},
         "executor.memory_gb": {"min": 1, "max": 256},
-        "total_memory_gb": {"max": args.max_total_memory_gb},
+        "total_memory_gb": {"max": max_total_memory_gb},
     }
 
     llm = _load_llm_client(config_path)
@@ -739,7 +780,7 @@ def cmd_iterate(args: argparse.Namespace) -> None:
         run_dir = RUNS_DIR / f"run_{run_id}"
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        if iteration == 1 and args.use_base_for_first:
+        if iteration == 1 and use_base_for_first:
             spark_conf = _get_spark_conf(base_manifest)
             executor = _get_executor_spec(base_manifest)
             variant = Variant(
@@ -758,7 +799,7 @@ def cmd_iterate(args: argparse.Namespace) -> None:
                 "executor.instances": int(_get_executor_spec(base_manifest).get("instances", 1)),
                 "executor.memory_gb": _parse_memory_gb(str(_get_executor_spec(base_manifest).get("memory", "4g"))),
             }
-            system, user = _build_tuning_prompt(history, base_params, constraints, args.history_url)
+            system, user = _build_tuning_prompt(history, base_params, constraints, history_url)
             response = llm.chat(system, user)
             try:
                 parsed = json.loads(response.content)
@@ -832,13 +873,13 @@ def cmd_iterate(args: argparse.Namespace) -> None:
         if not app_id:
             driver_pod = _find_driver_pod(namespace, manifest["metadata"]["name"])
             log_args = ["logs", driver_pod, "-n", namespace]
-            if args.driver_container:
-                log_args.extend(["-c", args.driver_container])
+            if driver_container:
+                log_args.extend(["-c", driver_container])
             log_args.extend(["--tail", "2000"])
             logs = _run_kubectl(log_args)
             app_id = _extract_app_id(logs)
 
-        stages_url = _history_stages_url(args.history_url, app_id)
+        stages_url = _history_stages_url(history_url, app_id)
         stages = _fetch_json(stages_url)
         metrics = _collect_metrics_from_stages(stages)
 
@@ -847,7 +888,7 @@ def cmd_iterate(args: argparse.Namespace) -> None:
                 "app_id": app_id,
                 "application_state": final_state,
                 "history_api": stages_url,
-                "spark_ui": _history_ui_url(args.history_url, app_id),
+                "spark_ui": _history_ui_url(history_url, app_id),
                 "runtime_seconds": metrics.get("runtime_seconds"),
                 "spill_gb": metrics.get("spill_gb"),
             }
@@ -957,12 +998,12 @@ def build_parser() -> argparse.ArgumentParser:
     iterate.add_argument("--manifest", required=True, help="Path to base SparkApplication YAML.")
     iterate.add_argument("--transform", required=True, help="Path to transformation code.")
     iterate.add_argument("--config", required=True, help="Path to config.yaml for LLM router.")
-    iterate.add_argument("--history-url", required=True, help="Spark History Server base URL.")
+    iterate.add_argument("--history-url", required=False, help="Spark History Server base URL.")
     iterate.add_argument("--iterations", type=int, default=None, help="Number of iterations.")
     iterate.add_argument(
         "--max-total-memory-gb",
         type=int,
-        default=500,
+        default=None,
         help="Max total requested memory (driver + executors).",
     )
     iterate.add_argument(

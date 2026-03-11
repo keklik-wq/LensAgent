@@ -10,7 +10,10 @@ Minimal, policy‑driven shell around an LLM that can analyze Spark jobs using S
 
 ## Quick start
 ```bash
+uv venv .venv
 uv pip install -e ".[dev]"
+export CONFIG_PATH=config.yaml
+export APP_ID=app-20240311123456-0001
 python3 main.py
 ```
 
@@ -20,7 +23,18 @@ CONFIG_PATH=config.yaml
 APP_ID=app-20240311123456-0001
 K8S_NAMESPACE=spark-jobs
 OUTPUT_PATH=/data/warehouse/my_table
+LLM_ROUTER_API_KEY=mock-token
+
+# Spark tuning loop
+ITERATIONS=5
+HISTORY_URL=https://hs.dev.bdp-common.k8s.mediascope.net
+MAX_TOTAL_MEMORY_GB=500
+USE_BASE_FOR_FIRST=true
+DRIVER_CONTAINER=
 ```
+Notes:
+- `APP_ID`, `K8S_NAMESPACE`, `OUTPUT_PATH` are used by `main.py` (single-run mode).
+- The tuning loop (`experiment.py iterate`) does not use `APP_ID`.
 
 ## Directory layout
 - `main.py` — CLI entry point.
@@ -30,6 +44,7 @@ OUTPUT_PATH=/data/warehouse/my_table
 ## Notes
 - This is a scaffold. Replace stub adapters with your internal APIs.
 - The LLM never accesses the system directly; it only sees structured context.
+- `output_storage.type` supports `local` only in this repo; `hdfs` and `s3` are placeholders.
 
 ## Spark Tuning Loop (LLM-driven)
 This project includes an automated tuning loop that:
@@ -45,13 +60,18 @@ This project includes an automated tuning loop that:
 - SparkOperator CRD `sparkapplications.sparkoperator.k8s.io` is installed.
 - Spark History Server is reachable (no auth).
 - LLM router config is set in `config.yaml` (see `llm_router` block).
+  - `LLM_ROUTER_API_KEY` must be set in `.env` or the environment.
 
 ### Inputs
 - Transformation code file (e.g. `input/UVIM_SignalsLinking_partners_research.py`)
 - Base SparkApplication manifest (e.g. `input/UVIM_SignalsLinking_partners_research.yaml`)
 - `config.yaml` with LLM router settings
-- `.env` with iteration count:
-  - `ITERATIONS=5`
+- `.env` with tuning settings (CLI flags override env):
+  - `ITERATIONS` (required unless `--iterations` is passed)
+  - `HISTORY_URL` (required unless `--history-url` is passed)
+  - `MAX_TOTAL_MEMORY_GB` (optional)
+  - `USE_BASE_FOR_FIRST` (optional)
+  - `DRIVER_CONTAINER` (optional)
 
 ### Run The Full Loop
 ```bash
