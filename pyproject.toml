@@ -4,12 +4,14 @@ version = "0.1.0"
 description = "Policy-driven shell around an LLM for Spark optimization workflows."
 requires-python = ">=3.14"
 dependencies = [
-  "PyYAML",
+  "pyyaml",
   "python-dotenv",
-  "kubernetes",
 ]
 
 [project.optional-dependencies]
+kubernetes = [
+  "kubernetes",
+]
 dev = [
   "ruff",
   "pytest",

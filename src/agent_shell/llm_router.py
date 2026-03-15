@@ -1,16 +1,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from typing import Any
 
+from .clients import LlmResponse
 from .http import HttpClient
-
-
-@dataclass(frozen=True)
-class LlmResponse:
-    content: str
-    raw: dict[str, Any]
 
 
 class LlmRouterClient:

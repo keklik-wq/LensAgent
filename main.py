@@ -10,15 +10,17 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 from dotenv import load_dotenv
-from kubernetes import client as k8s_client
-from kubernetes import config as k8s_config
 
 from src.agent_shell.config import AppConfig
-from src.agent_shell.llm_router import LlmRouterClient
+from src.agent_shell.factory import (
+    build_llm_client,
+    build_spark_history_provider,
+    build_spark_runtime,
+)
 
 
 OUTPUT_DIR = Path("output")
@@ -105,7 +107,7 @@ def _build_tuning_prompt(
     history: list[dict[str, Any]],
     base_params: dict[str, Any],
     constraints: dict[str, Any],
-    history_url: str,
+    history_label: str,
 ) -> tuple[str, str]:
     system = (
         "You are a Spark tuning assistant. "
@@ -117,7 +119,7 @@ def _build_tuning_prompt(
         "task": "Propose next Spark config parameters for the next run.",
         "base_params": base_params,
         "history": history,
-        "history_url": history_url,
+        "history_url": history_label,
         "constraints": constraints,
         "response_schema": {
             "params": {
@@ -132,26 +134,14 @@ def _build_tuning_prompt(
     return system, json.dumps(user, ensure_ascii=True)
 
 
-def _load_llm_client(config_path: Path) -> LlmRouterClient:
-    cfg = AppConfig.load(config_path)
-    return LlmRouterClient(
-        base_url=cfg.llm_router.base_url,
-        api_key_env=cfg.llm_router.api_key_env,
-        model=cfg.llm_router.model,
-        timeout_seconds=cfg.llm_router.timeout_seconds,
-        allow_models=cfg.llm_router.allow_models,
-    )
-
-
 def _apply_constraints(
     params: dict[str, Any],
     constraints: dict[str, Any],
     driver_memory_gb: int,
 ) -> Variant:
     def _clamp(name: str, value: int) -> int:
-        lo = int(constraints[name]["min"])
-        hi = int(constraints[name]["max"])
-        return max(lo, min(hi, value))
+        limits = constraints[name]
+        return max(int(limits["min"]), min(int(limits["max"]), value))
 
     shuffle = _clamp("spark.sql.shuffle.partitions", int(params.get("spark.sql.shuffle.partitions", 200)))
     cores = _clamp("executor.cores", int(params.get("executor.cores", 1)))
@@ -199,11 +189,11 @@ def _mask_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     def mask_node(node: Any) -> Any:
         if isinstance(node, dict):
             masked = {}
-            for key, val in node.items():
+            for key, value in node.items():
                 if SENSITIVE_KEY_RE.search(str(key)):
-                    masked[key] = _sanitize_value(str(val))
+                    masked[key] = _sanitize_value(str(value))
                 else:
-                    masked[key] = mask_node(val)
+                    masked[key] = mask_node(value)
             return masked
         if isinstance(node, list):
             return [mask_node(item) for item in node]
@@ -220,103 +210,7 @@ def _ensure_dirs() -> None:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _load_kube_clients(kube_context: str | None) -> tuple[k8s_client.CoreV1Api, k8s_client.CustomObjectsApi]:
-    try:
-        k8s_config.load_kube_config(context=kube_context)
-    except Exception:
-        k8s_config.load_incluster_config()
-    return k8s_client.CoreV1Api(), k8s_client.CustomObjectsApi()
-
-
-def _apply_spark_application(
-    custom_api: k8s_client.CustomObjectsApi,
-    manifest: dict[str, Any],
-    namespace: str,
-) -> None:
-    api_version = manifest.get("apiVersion", "")
-    kind = manifest.get("kind", "")
-    if kind != "SparkApplication" or "/" not in api_version:
-        raise SystemExit("Only SparkApplication manifests are supported.")
-    group, version = api_version.split("/", 1)
-    name = manifest.get("metadata", {}).get("name")
-    if not name:
-        raise SystemExit("Manifest metadata.name is required.")
-    plural = "sparkapplications"
-    try:
-        custom_api.get_namespaced_custom_object(group, version, namespace, plural, name)
-        custom_api.replace_namespaced_custom_object(group, version, namespace, plural, name, manifest)
-    except k8s_client.exceptions.ApiException as exc:
-        if exc.status == 404:
-            custom_api.create_namespaced_custom_object(group, version, namespace, plural, manifest)
-        else:
-            raise
-
-
-def _wait_for_application(
-    namespace: str,
-    name: str,
-    custom_api: k8s_client.CustomObjectsApi,
-    group: str,
-    version: str,
-    poll_seconds: int = 20,
-    timeout_seconds: int = 6 * 60 * 60,
-) -> dict[str, Any]:
-    start = time.time()
-    while True:
-        obj = custom_api.get_namespaced_custom_object(group, version, namespace, "sparkapplications", name)
-        state = (
-            obj.get("status", {})
-            .get("applicationState", {})
-            .get("state", "")
-        )
-        if state in {"COMPLETED", "FAILED"}:
-            return obj
-        if time.time() - start > timeout_seconds:
-            raise SystemExit(f"Timed out waiting for {name} to finish.")
-        time.sleep(poll_seconds)
-
-
-def _find_driver_pod(
-    namespace: str,
-    app_name: str,
-    core_api: k8s_client.CoreV1Api,
-) -> str:
-    labels = f"sparkoperator.k8s.io/app-name={app_name},spark-role=driver"
-    pods = core_api.list_namespaced_pod(namespace, label_selector=labels)
-    items = pods.items
-    if items:
-        return items[0].metadata.name
-    pods = core_api.list_namespaced_pod(namespace)
-    for item in pods.items:
-        name = item.metadata.name or ""
-        if name.startswith(f"{app_name}-driver"):
-            return name
-    raise SystemExit(f"Driver pod not found for app {app_name}")
-
-
-def _app_id_from_status(obj: dict[str, Any]) -> str:
-    status = obj.get("status", {})
-    for key in ("sparkApplicationId", "appId", "applicationId"):
-        value = status.get(key)
-        if value:
-            return str(value)
-    return ""
-
-
-def _extract_app_id(driver_logs: str) -> str:
-    patterns = [
-        r"app[-_]?id\s*[:=]\s*(app-\d{14}-\d{4})",
-        r"(app-\d{14}-\d{4})",
-        r"(spark-[a-f0-9]{32})",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, driver_logs, re.IGNORECASE)
-        if match:
-            return match.group(1)
-    raise SystemExit("Could not find appId in driver logs.")
-
-
-def _parse_stage_time(value: Optional[str]) -> Optional[datetime]:
+def _parse_stage_time(value: str | None) -> datetime | None:
     if not value:
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%S.%fGMT", "%Y-%m-%dT%H:%M:%SGMT"):
@@ -353,18 +247,31 @@ def _collect_metrics_from_stages(stages: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
-def _fetch_json(url: str) -> Any:
-    from urllib.request import urlopen
-    with urlopen(url) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _history_stages_url(base: str, app_id: str) -> str:
-    return f"{base.rstrip('/')}/api/v1/applications/{app_id}/stages"
-
-
-def _history_ui_url(base: str, app_id: str) -> str:
-    return f"{base.rstrip('/')}/history/{app_id}/stages/"
+def _load_stages_with_retry(
+    app_id: str,
+    history_provider: Any,
+    poll_seconds: float = 2.0,
+    timeout_seconds: int = 120,
+) -> tuple[str, list[dict[str, Any]]]:
+    deadline = time.time() + timeout_seconds
+    last_error: Exception | None = None
+    candidate_app_id = app_id
+    while time.time() < deadline:
+        try:
+            stages = history_provider.get_stages(candidate_app_id)
+        except Exception as exc:
+            last_error = exc
+            latest_app_id = history_provider.latest_app_id()
+            if latest_app_id and latest_app_id != candidate_app_id:
+                candidate_app_id = latest_app_id
+            time.sleep(poll_seconds)
+            continue
+        if stages:
+            return candidate_app_id, stages
+        time.sleep(poll_seconds)
+    if last_error is not None:
+        raise SystemExit(f"Failed to load stages for {candidate_app_id}: {last_error}") from last_error
+    raise SystemExit(f"Timed out waiting for stages for {candidate_app_id}")
 
 
 def _generate_variants(
@@ -439,6 +346,7 @@ def run_loop(args: argparse.Namespace) -> None:
         raise SystemExit(f"Config not found: {config_path}")
 
     load_dotenv()
+    app_config = AppConfig.load(config_path)
 
     base_manifest = _read_yaml(manifest_path)
     driver = _get_driver_spec(base_manifest)
@@ -447,13 +355,9 @@ def run_loop(args: argparse.Namespace) -> None:
     namespace = args.namespace or base_manifest.get("metadata", {}).get("namespace", "default")
     base_manifest.setdefault("metadata", {})["namespace"] = namespace
 
-    api_version = base_manifest.get("apiVersion", "")
-    kind = base_manifest.get("kind", "")
-    if kind != "SparkApplication" or "/" not in api_version:
-        raise SystemExit("Only SparkApplication manifests are supported.")
-    group, version = api_version.split("/", 1)
-
-    core_api, custom_api = _load_kube_clients(args.kube_context)
+    runtime = build_spark_runtime(app_config, kube_context=args.kube_context)
+    history_provider = build_spark_history_provider(app_config, base_url_override=args.history_url)
+    llm = build_llm_client(app_config)
 
     constraints = {
         "spark.sql.shuffle.partitions": {"min": 200, "max": 10000},
@@ -463,10 +367,8 @@ def run_loop(args: argparse.Namespace) -> None:
         "total_memory_gb": {"max": args.max_total_memory_gb},
     }
 
-    llm = _load_llm_client(config_path)
     transform_hash = _hash_file(transform_path)
     history: list[dict[str, Any]] = []
-
     base_params = {
         "spark.sql.shuffle.partitions": int(_get_spark_conf(base_manifest).get("spark.sql.shuffle.partitions", 200)),
         "executor.cores": int(_get_executor_spec(base_manifest).get("cores", 1)),
@@ -487,8 +389,8 @@ def run_loop(args: argparse.Namespace) -> None:
                 executor_memory_gb=base_params["executor.memory_gb"],
             )
             rationale = "Base config for first run."
-        elif args.use_random_for_first and iteration == 1:
-            variants = _generate_variants(
+        elif iteration == 1 and args.use_random_for_first:
+            variant = _generate_variants(
                 base=Variant(
                     shuffle_partitions=base_params["spark.sql.shuffle.partitions"],
                     executor_cores=base_params["executor.cores"],
@@ -498,30 +400,29 @@ def run_loop(args: argparse.Namespace) -> None:
                 max_total_memory_gb=args.max_total_memory_gb,
                 driver_memory_gb=driver_memory_gb,
                 count=1,
-            )
-            variant = variants[0]
+            )[0]
             rationale = "Randomized candidate for first run."
         else:
-            system, user = _build_tuning_prompt(history, base_params, constraints, args.history_url)
+            system, user = _build_tuning_prompt(
+                history,
+                base_params,
+                constraints,
+                history_provider.ui_url("latest"),
+            )
             response = llm.chat(system, user)
             try:
                 parsed = json.loads(response.content)
             except json.JSONDecodeError as exc:
                 raise SystemExit(f"LLM response was not valid JSON: {exc}") from exc
             variant = _apply_constraints(parsed.get("params", {}), constraints, driver_memory_gb)
-            rationale = parsed.get("rationale", "")
+            rationale = str(parsed.get("rationale", ""))
 
-        manifest = _update_manifest(
-            manifest=base_manifest,
-            variant=variant,
-            run_id=run_id,
-        )
+        manifest = _update_manifest(manifest=base_manifest, variant=variant, run_id=run_id)
 
         manifest_out = run_dir / f"manifest_{run_id}.yaml"
         manifest_masked_out = run_dir / f"manifest_{run_id}.masked.yaml"
         _write_yaml(manifest_out, manifest)
         _write_yaml(manifest_masked_out, _mask_manifest(manifest))
-
         transform_out = run_dir / transform_path.name
         shutil.copy2(transform_path, transform_out)
 
@@ -550,58 +451,34 @@ def run_loop(args: argparse.Namespace) -> None:
             "app_id": "",
             "application_state": "",
             "history_api": "",
+            "driver_logs": "",
         }
+        (run_dir / f"run_{run_id}.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
 
-        (run_dir / f"run_{run_id}.json").write_text(
-            json.dumps(run_meta, indent=2), encoding="utf-8"
+        result = runtime.run_application(manifest, namespace, driver_container=args.driver_container)
+        resolved_app_id, stages = _load_stages_with_retry(
+            result.app_id,
+            history_provider,
+            poll_seconds=app_config.spark_history.poll_seconds,
+            timeout_seconds=app_config.spark_history.timeout_seconds,
         )
-
-        _ensure_dirs()
-        _apply_spark_application(custom_api, manifest, namespace)
-        status_obj = _wait_for_application(
-            namespace,
-            manifest["metadata"]["name"],
-            custom_api,
-            group,
-            version,
-        )
-        final_state = (
-            status_obj.get("status", {})
-            .get("applicationState", {})
-            .get("state", "")
-        )
-
-        app_id = _app_id_from_status(status_obj)
-        if not app_id:
-            driver_pod = _find_driver_pod(namespace, manifest["metadata"]["name"], core_api)
-            logs = core_api.read_namespaced_pod_log(
-                driver_pod,
-                namespace,
-                container=args.driver_container,
-                tail_lines=2000,
-            )
-            app_id = _extract_app_id(logs)
-
-        stages_url = _history_stages_url(args.history_url, app_id)
-        stages = _fetch_json(stages_url)
         metrics = _collect_metrics_from_stages(stages)
 
         run_meta.update(
             {
-                "app_id": app_id,
-                "application_state": final_state,
-                "history_api": stages_url,
-                "spark_ui": _history_ui_url(args.history_url, app_id),
+                "app_id": resolved_app_id,
+                "application_state": result.final_state,
+                "history_api": history_provider.stages_url(resolved_app_id),
+                "spark_ui": history_provider.ui_url(resolved_app_id),
                 "runtime_seconds": metrics.get("runtime_seconds"),
                 "spill_gb": metrics.get("spill_gb"),
+                "driver_logs": result.driver_logs,
             }
         )
         if run_meta["runtime_seconds"] is not None:
             run_meta["requested_gb_seconds"] = run_meta["requested_gb"] * run_meta["runtime_seconds"]
 
-        (run_dir / f"run_{run_id}.json").write_text(
-            json.dumps(run_meta, indent=2), encoding="utf-8"
-        )
+        (run_dir / f"run_{run_id}.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
         history.append(run_meta)
 
     summary = _summarize_runs()
@@ -617,16 +494,13 @@ def _summarize_runs() -> dict[str, Any]:
 
     scored: list[tuple[float, dict[str, Any]]] = []
     for run in runs:
-        if run.get("requested_gb_seconds") is None:
-            continue
-        scored.append((float(run["requested_gb_seconds"]), run))
-
+        if run.get("requested_gb_seconds") is not None:
+            scored.append((float(run["requested_gb_seconds"]), run))
     if not scored:
         raise SystemExit("No runs with requested_gb_seconds recorded.")
 
     scored.sort(key=lambda item: item[0])
     best_score, best = scored[0]
-
     for run in runs:
         run["is_best"] = run.get("run_id") == best.get("run_id")
         run_path = Path(run["manifest_path"]).parent / f"run_{run['run_id']}.json"
@@ -649,11 +523,11 @@ def _summarize_runs() -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Spark tuning loop with LLM-driven proposals.")
+    parser = argparse.ArgumentParser(description="Spark tuning loop with replaceable infrastructure backends.")
     parser.add_argument("--manifest", required=True, help="Path to SparkApplication YAML.")
     parser.add_argument("--transform", required=True, help="Path to transformation code file.")
-    parser.add_argument("--config", required=True, help="Path to config.yaml with LLM router settings.")
-    parser.add_argument("--history-url", required=True, help="Spark History Server base URL.")
+    parser.add_argument("--config", required=True, help="Path to config.yaml.")
+    parser.add_argument("--history-url", default=None, help="History base URL override.")
     parser.add_argument("--iterations", type=int, required=True, help="Number of iterations to run.")
     parser.add_argument(
         "--max-total-memory-gb",
@@ -664,7 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--use-base-for-first",
         action="store_true",
-        help="Use base manifest params for first run before LLM tuning.",
+        help="Use base manifest params for first run before tuning.",
     )
     parser.add_argument(
         "--use-random-for-first",
@@ -674,17 +548,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--driver-container",
         default=None,
-        help="Driver container name for kubectl logs (optional).",
+        help="Driver container name for Kubernetes runtime.",
     )
     parser.add_argument(
         "--kube-context",
         default=None,
-        help="kubectl context to use (optional).",
+        help="Kubernetes context override for kubernetes runtime.",
     )
     parser.add_argument(
         "--namespace",
         default=None,
-        help="Kubernetes namespace override (optional).",
+        help="Namespace override.",
     )
     return parser
 

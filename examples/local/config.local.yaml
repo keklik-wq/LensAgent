@@ -1,0 +1,18 @@
+llm:
+  backend: "local"
+  local:
+    strategy: "best_previous"
+
+spark_runtime:
+  backend: "local"
+  local:
+    app_id_prefix: "local-app"
+    final_state: "COMPLETED"
+    driver_log_template: "Local runtime finished {app_name} with app id {app_id} in {namespace}"
+
+spark_history:
+  backend: "local"
+  local:
+    base_url: "http://local-history"
+    fixtures_path: "examples/local/history"
+    default_app_id: "local-app-001"

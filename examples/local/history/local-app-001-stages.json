@@ -1,0 +1,9 @@
+[
+  {
+    "status": "COMPLETE",
+    "submissionTime": "2026-03-15T10:00:00.000GMT",
+    "completionTime": "2026-03-15T10:05:00.000GMT",
+    "memoryBytesSpilled": 1073741824,
+    "diskBytesSpilled": 0
+  }
+]

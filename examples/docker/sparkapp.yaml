@@ -1,0 +1,25 @@
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: docker-spark-job
+  namespace: local-docker
+spec:
+  type: Python
+  mode: cluster
+  mainApplicationFile: local:///workspace/examples/docker/job.py
+  sparkConf:
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: "file:/tmp/spark-events"
+    spark.history.fs.logDirectory: "file:/tmp/spark-events"
+    spark.sql.shuffle.partitions: "8"
+    spark.ui.enabled: "true"
+  driver:
+    cores: 1
+    memory: "1g"
+  executor:
+    cores: 1
+    instances: 1
+    memory: "1g"
+  arguments:
+    - "--rows"
+    - "2000"

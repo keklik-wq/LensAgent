@@ -1,56 +1,79 @@
 # Spark LLM Tuning Loop
 
-This repo runs an LLM‑driven tuning loop for Spark jobs on Kubernetes using a SparkApplication manifest.
+This repo now treats every external dependency as a replaceable backend:
+- `llm`: `router` or `local`
+- `spark_runtime`: `kubernetes` or `local`
+- `spark_history`: `http` or `local`
 
-**Flow**
-1. Apply a SparkApplication manifest via `kubectl`.
-2. Wait for completion.
-3. Pull metrics from Spark History Server.
-4. Send run history to an LLM and get the next parameter proposal.
-5. Repeat for N iterations.
+The tuning loop no longer depends directly on `kubectl` or on the Kubernetes Python client at import time. Kubernetes support still exists, but it is just one runtime adapter.
 
-All outputs (manifests, masked manifests, run metadata, summary) are stored under `output/`.
+## Backends
 
-## Quick Start
-Requires Python 3.14.2 (venv already initialized by you).
+### Production-style run
+Use:
+- `llm.backend=router`
+- `spark_runtime.backend=kubernetes`
+- `spark_history.backend=http`
+
+Install Kubernetes support only when you need it:
 ```bash
-uv venv .venv
-uv pip install -e .
-export LLM_ROUTER_API_KEY=your-token
-python3 main.py \
-  --manifest input/UVIM_SignalsLinking_partners_research.yaml \
-  --transform input/UVIM_SignalsLinking_partners_research.py \
-  --config config.yaml \
-  --history-url https://your-history-server \
-  --iterations 5 \
+uv pip install -e ".[kubernetes]"
+```
+
+### Local run
+Use:
+- `llm.backend=local`
+- `spark_runtime.backend=local`
+- `spark_history.backend=local`
+
+This mode runs end-to-end without Kubernetes and is intended for local development, CI smoke checks, and parallel agent work.
+
+## Local Docker Compose
+
+```bash
+docker compose up --build
+```
+
+That command runs:
+```bash
+python main.py \
+  --manifest examples/local/sparkapp.yaml \
+  --transform examples/local/job.py \
+  --config examples/local/config.local.yaml \
+  --iterations 2 \
   --use-base-for-first
 ```
 
-## Config (`config.yaml`)
-Only the LLM router settings are required:
+Artifacts are written to `output/`.
+
+## Config Shape
+
 ```yaml
-llm_router:
-  base_url: "https://llm-router.internal"
-  api_key_env: "LLM_ROUTER_API_KEY"
-  model: "gpt-4o-mini"
-  timeout_seconds: 30
-  allow_models:
-    - "gpt-4o-mini"
+llm:
+  backend: "router"
+  router:
+    base_url: "https://llm-router.internal"
+    api_key_env: "LLM_ROUTER_API_KEY"
+    model: "gpt-4o-mini"
+    timeout_seconds: 30
+    allow_models: ["gpt-4o-mini"]
+
+spark_runtime:
+  backend: "kubernetes"
+  kubernetes:
+    kube_context: null
+
+spark_history:
+  backend: "http"
+  http:
+    base_url: "https://spark-history.internal"
+    timeout_seconds: 30
 ```
 
-## Outputs
-- `output/runs/run_XXX/manifest_XXX.yaml`
-- `output/runs/run_XXX/manifest_XXX.masked.yaml`
-- `output/runs/run_XXX/run_XXX.json`
-- `output/summary.json`
+Legacy `llm_router:` config is still accepted and normalized to the new structure.
 
-## Notes
-- The loop uses the Spark History Server stages API: `/api/v1/applications/{appId}/stages`.
-- The app ID is taken from SparkApplication status or parsed from driver logs.
-- Parameter tuning targets:
-  - `spark.sql.shuffle.partitions`
-  - `executor.cores`
-  - `executor.instances`
-  - `executor.memory_gb`
+## Why this refactor
 
-Example History API payload is in `example_parts/stages.txt`.
+- `main.py` composes adapters instead of instantiating Kubernetes and HTTP dependencies inline.
+- Local execution no longer needs the `kubernetes` package.
+- Replacing one environment with another is now a config change, not a rewrite.

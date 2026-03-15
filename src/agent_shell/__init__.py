@@ -1,8 +1,9 @@
 __all__ = [
     "AppConfig",
-    "LlmRouterConfig",
+    "LlmConfig",
     "LlmRouterClient",
+    "RouterLlmConfig",
 ]
 
-from .config import AppConfig, LlmRouterConfig
+from .config import AppConfig, LlmConfig, RouterLlmConfig
 from .llm_router import LlmRouterClient

@@ -1,7 +1,20 @@
-llm_router:
-  base_url: "https://llm-router.internal"
-  api_key_env: "LLM_ROUTER_API_KEY"
-  model: "gpt-4o-mini"
-  timeout_seconds: 30
-  allow_models:
-    - "gpt-4o-mini"
+llm:
+  backend: "router"
+  router:
+    base_url: "https://llm-router.internal"
+    api_key_env: "LLM_ROUTER_API_KEY"
+    model: "gpt-4o-mini"
+    timeout_seconds: 30
+    allow_models:
+      - "gpt-4o-mini"
+
+spark_runtime:
+  backend: "kubernetes"
+  kubernetes:
+    kube_context: null
+
+spark_history:
+  backend: "http"
+  http:
+    base_url: "https://spark-history.internal"
+    timeout_seconds: 30

@@ -1,0 +1,72 @@
+services:
+  mock-llm:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: ["python", "docker/mock_llm_server.py"]
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; req=urllib.request.Request('http://127.0.0.1:8000/v1/chat/completions', data=b'{\"model\":\"gpt-4o-mini\",\"messages\":[]}', headers={'Content-Type':'application/json'}, method='POST'); urllib.request.urlopen(req)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  spark-history:
+    build: .
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - spark-events:/tmp/spark-events
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_DAEMON_MEMORY: "1g"
+      SPARK_HISTORY_OPTS: "-Dspark.history.fs.logDirectory=file:/tmp/spark-events -Dspark.history.ui.port=18080"
+    command:
+      [
+        "bash",
+        "-lc",
+        "/opt/bitnami/spark/sbin/start-history-server.sh && tail -f /opt/bitnami/spark/logs/*history*.out"
+      ]
+    ports:
+      - "18080:18080"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:18080/api/v1/version')"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+
+  lens-agent:
+    build: .
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - spark-events:/tmp/spark-events
+    depends_on:
+      mock-llm:
+        condition: service_healthy
+      spark-history:
+        condition: service_healthy
+    environment:
+      PYTHONUNBUFFERED: "1"
+      LLM_ROUTER_API_KEY: "local-dev-token"
+    command:
+      [
+        "python3",
+        "main.py",
+        "--manifest",
+        "examples/docker/sparkapp.yaml",
+        "--transform",
+        "examples/docker/job.py",
+        "--config",
+        "examples/docker/config.docker.yaml",
+        "--history-url",
+        "http://spark-history:18080",
+        "--iterations",
+        "2",
+        "--use-base-for-first"
+      ]
+
+volumes:
+  spark-events:
