@@ -2,16 +2,17 @@
 name = "spark-llm-agent-shell"
 version = "0.1.0"
 description = "Policy-driven shell around an LLM for Spark optimization workflows."
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 dependencies = [
-  "PyYAML>=6.0",
-  "python-dotenv>=1.0.1",
+  "PyYAML",
+  "python-dotenv",
+  "kubernetes",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "ruff>=0.6.4",
-  "pytest>=8.3.2",
+  "ruff",
+  "pytest",
 ]
 
 [tool.ruff]
