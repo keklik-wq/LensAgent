@@ -91,7 +91,7 @@ def _coerce_param_value(value: Any, param_type: str) -> Any:
             return int(value)
         return int(_parse_memory_gb(str(value)))
     return str(value)
-   
+                           
 
 def _format_param_value(value: Any, param_type: str) -> Any:
     if param_type == "memory_gb":
