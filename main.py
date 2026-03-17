@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
+import os
 import random
 import re
 import shutil
@@ -25,6 +27,8 @@ from src.agent_shell.factory import (
 
 OUTPUT_DIR = Path("output")
 RUNS_DIR = OUTPUT_DIR / "runs"
+LOG_DIR = OUTPUT_DIR / "logs"
+LOG_FILE = LOG_DIR / "agent.log"
 
 
 @dataclass(frozen=True)
@@ -208,6 +212,29 @@ def _build_run_id(index: int) -> str:
 
 def _ensure_dirs() -> None:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _setup_logging() -> logging.Logger:
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    if not root_logger.handlers:
+        file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(level)
+        stream_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+        root_logger.addHandler(stream_handler)
+    return logging.getLogger("lens-agent")
 
 
 def _parse_stage_time(value: str | None) -> datetime | None:
@@ -335,6 +362,7 @@ def _generate_variants(
 
 
 def run_loop(args: argparse.Namespace) -> None:
+    logger = logging.getLogger("lens-agent")
     manifest_path = Path(args.manifest)
     transform_path = Path(args.transform)
     config_path = Path(args.config)
@@ -347,6 +375,7 @@ def run_loop(args: argparse.Namespace) -> None:
 
     load_dotenv()
     app_config = AppConfig.load(config_path)
+    logger.info("Loaded config from %s (runtime=%s, history=%s, llm=%s)", config_path, app_config.spark_runtime.backend, app_config.spark_history.backend, app_config.llm.backend)
 
     base_manifest = _read_yaml(manifest_path)
     driver = _get_driver_spec(base_manifest)
@@ -358,6 +387,7 @@ def run_loop(args: argparse.Namespace) -> None:
     runtime = build_spark_runtime(app_config, kube_context=args.kube_context)
     history_provider = build_spark_history_provider(app_config, base_url_override=args.history_url)
     llm = build_llm_client(app_config)
+    logger.info("Starting run loop (iterations=%s, namespace=%s)", args.iterations, namespace)
 
     constraints = {
         "spark.sql.shuffle.partitions": {"min": 200, "max": 10000},
@@ -380,6 +410,7 @@ def run_loop(args: argparse.Namespace) -> None:
         run_id = _build_run_id(iteration)
         run_dir = RUNS_DIR / f"run_{run_id}"
         run_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Run %s: preparing manifest and inputs", run_id)
 
         if iteration == 1 and args.use_base_for_first:
             variant = Variant(
@@ -418,6 +449,14 @@ def run_loop(args: argparse.Namespace) -> None:
             rationale = str(parsed.get("rationale", ""))
 
         manifest = _update_manifest(manifest=base_manifest, variant=variant, run_id=run_id)
+        logger.info(
+            "Run %s: variant shuffle=%s cores=%s instances=%s mem_gb=%s",
+            run_id,
+            variant.shuffle_partitions,
+            variant.executor_cores,
+            variant.executor_instances,
+            variant.executor_memory_gb,
+        )
 
         manifest_out = run_dir / f"manifest_{run_id}.yaml"
         manifest_masked_out = run_dir / f"manifest_{run_id}.masked.yaml"
@@ -452,10 +491,14 @@ def run_loop(args: argparse.Namespace) -> None:
             "application_state": "",
             "history_api": "",
             "driver_logs": "",
+            "driver_logs_path": "",
         }
         (run_dir / f"run_{run_id}.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
 
+        logger.info("Run %s: submitting Spark job", run_id)
         result = runtime.run_application(manifest, namespace, driver_container=args.driver_container)
+        driver_logs_path = run_dir / "driver.log"
+        driver_logs_path.write_text(result.driver_logs or "", encoding="utf-8")
         resolved_app_id, stages = _load_stages_with_retry(
             result.app_id,
             history_provider,
@@ -463,6 +506,13 @@ def run_loop(args: argparse.Namespace) -> None:
             timeout_seconds=app_config.spark_history.timeout_seconds,
         )
         metrics = _collect_metrics_from_stages(stages)
+        logger.info(
+            "Run %s: completed app_id=%s state=%s runtime_seconds=%s",
+            run_id,
+            resolved_app_id,
+            result.final_state,
+            metrics.get("runtime_seconds"),
+        )
 
         run_meta.update(
             {
@@ -473,6 +523,7 @@ def run_loop(args: argparse.Namespace) -> None:
                 "runtime_seconds": metrics.get("runtime_seconds"),
                 "spill_gb": metrics.get("spill_gb"),
                 "driver_logs": result.driver_logs,
+                "driver_logs_path": str(driver_logs_path),
             }
         )
         if run_meta["runtime_seconds"] is not None:
@@ -483,6 +534,7 @@ def run_loop(args: argparse.Namespace) -> None:
 
     summary = _summarize_runs()
     (OUTPUT_DIR / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    logger.info("Wrote summary to %s", OUTPUT_DIR / "summary.json")
 
 
 def _summarize_runs() -> dict[str, Any]:
@@ -569,6 +621,7 @@ def main() -> None:
     if args.use_base_for_first and args.use_random_for_first:
         raise SystemExit("Choose only one of --use-base-for-first or --use-random-for-first.")
     _ensure_dirs()
+    _setup_logging()
     run_loop(args)
 
 

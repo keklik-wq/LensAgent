@@ -2,7 +2,7 @@
 
 This repo now treats every external dependency as a replaceable backend:
 - `llm`: `router` or `local`
-- `spark_runtime`: `kubernetes` or `local`
+- `spark_runtime`: `kubernetes`, `spark_submit`, or `local`
 - `spark_history`: `http` or `local`
 
 The tuning loop no longer depends directly on `kubectl` or on the Kubernetes Python client at import time. Kubernetes support still exists, but it is just one runtime adapter.
@@ -31,20 +31,28 @@ This mode runs end-to-end without Kubernetes and is intended for local developme
 ## Local Docker Compose
 
 ```bash
-docker compose up --build
+docker compose run --rm lens-agent
 ```
 
 That command runs:
 ```bash
 python main.py \
-  --manifest examples/local/sparkapp.yaml \
-  --transform examples/local/job.py \
-  --config examples/local/config.local.yaml \
+  --manifest examples/docker/sparkapp.yaml \
+  --transform examples/docker/job.py \
+  --config examples/docker/config.docker.yaml \
   --iterations 2 \
   --use-base-for-first
 ```
 
 Artifacts are written to `output/`.
+
+### Spark standalone mode (Docker Compose)
+
+```bash
+docker compose run --rm lens-agent-standalone
+```
+
+This uses `spark_submit` against a local Spark standalone cluster defined in `docker-compose.yml` and `examples/docker/config.standalone.yaml`.
 
 ## Config Shape
 

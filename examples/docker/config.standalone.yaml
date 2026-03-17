@@ -1,0 +1,27 @@
+llm:
+  backend: "router"
+  router:
+    base_url: "http://mock-llm:8000"
+    api_key_env: "LLM_ROUTER_API_KEY"
+    model: "gpt-4o-mini"
+    timeout_seconds: 30
+    allow_models:
+      - "gpt-4o-mini"
+
+spark_runtime:
+  backend: "spark_submit"
+  spark_submit:
+    spark_submit_bin: "/opt/bitnami/spark/bin/spark-submit"
+    master_url: "spark://spark-master:7077"
+    deploy_mode: "client"
+    event_log_dir: "/tmp/spark-events"
+    poll_seconds: 1.0
+    timeout_seconds: 300
+
+spark_history:
+  backend: "http"
+  poll_seconds: 2.0
+  timeout_seconds: 180
+  http:
+    base_url: "http://spark-history:18080"
+    timeout_seconds: 30
