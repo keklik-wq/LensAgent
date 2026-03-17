@@ -9,7 +9,6 @@ import random
 import re
 import shutil
 import time
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -17,7 +16,7 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
-from src.agent_shell.config import AppConfig
+from src.agent_shell.config import AppConfig, TuningParamConfig
 from src.agent_shell.factory import (
     build_llm_client,
     build_spark_history_provider,
@@ -29,14 +28,6 @@ OUTPUT_DIR = Path("output")
 RUNS_DIR = OUTPUT_DIR / "runs"
 LOG_DIR = OUTPUT_DIR / "logs"
 LOG_FILE = LOG_DIR / "agent.log"
-
-
-@dataclass(frozen=True)
-class Variant:
-    shuffle_partitions: int
-    executor_cores: int
-    executor_instances: int
-    executor_memory_gb: int
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -66,36 +57,117 @@ def _format_memory_gb(gb: int) -> str:
     return f"{gb}g"
 
 
-def _get_spark_conf(manifest: dict[str, Any]) -> dict[str, str]:
-    return manifest.get("spec", {}).get("sparkConf", {}) or {}
+def _get_by_path(data: dict[str, Any], path: list[str]) -> Any:
+    current: Any = data
+    for part in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
 
 
-def _get_executor_spec(manifest: dict[str, Any]) -> dict[str, Any]:
-    return manifest.get("spec", {}).get("executor", {}) or {}
+def _set_by_path(data: dict[str, Any], path: list[str], value: Any) -> None:
+    current: dict[str, Any] = data
+    for part in path[:-1]:
+        next_node = current.get(part)
+        if not isinstance(next_node, dict):
+            next_node = {}
+            current[part] = next_node
+        current = next_node
+    current[path[-1]] = value
 
 
-def _get_driver_spec(manifest: dict[str, Any]) -> dict[str, Any]:
-    return manifest.get("spec", {}).get("driver", {}) or {}
+def _coerce_param_value(value: Any, param_type: str) -> Any:
+    if param_type == "int":
+        return int(value)
+    if param_type == "float":
+        return float(value)
+    if param_type == "bool":
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "y"}
+    if param_type == "memory_gb":
+        if isinstance(value, (int, float)):
+            return int(value)
+        return int(_parse_memory_gb(str(value)))
+    return str(value)
 
 
-def _update_manifest(
-    manifest: dict[str, Any],
-    variant: Variant,
-    run_id: str,
+def _format_param_value(value: Any, param_type: str) -> Any:
+    if param_type == "memory_gb":
+        return _format_memory_gb(int(value))
+    if param_type == "int":
+        return int(value)
+    if param_type == "float":
+        return float(value)
+    if param_type == "bool":
+        return bool(value)
+    return value
+
+
+def _build_constraints(
+    tuning_params: dict[str, TuningParamConfig],
+    max_total_memory_gb: int | None,
 ) -> dict[str, Any]:
+    constraints: dict[str, Any] = {}
+    for name, spec in tuning_params.items():
+        if spec.min is None and spec.max is None:
+            continue
+        constraints[name] = {
+            "min": spec.min,
+            "max": spec.max,
+        }
+    if max_total_memory_gb is not None:
+        constraints["total_memory_gb"] = {"max": max_total_memory_gb}
+    return constraints
+
+
+def _build_response_schema(tuning_params: dict[str, TuningParamConfig]) -> dict[str, Any]:
+    schema: dict[str, Any] = {"params": {}, "rationale": "string"}
+    for name, spec in tuning_params.items():
+        param_type = "string"
+        if spec.type in {"int", "float", "bool"}:
+            param_type = spec.type
+        elif spec.type == "memory_gb":
+            param_type = "int"
+        schema["params"][name] = param_type
+    return schema
+
+
+def _build_base_params(
+    manifest: dict[str, Any],
+    tuning_params: dict[str, TuningParamConfig],
+) -> dict[str, Any]:
+    base_params: dict[str, Any] = {}
+    for name, spec in tuning_params.items():
+        raw = _get_by_path(manifest, spec.path)
+        if raw is None:
+            if spec.default is None:
+                raise ValueError(f"Manifest missing value for tuning param {name} ({'.'.join(spec.path)}).")
+            raw = spec.default
+        base_params[name] = _coerce_param_value(raw, spec.type)
+    return base_params
+
+
+def _apply_params_to_manifest(
+    manifest: dict[str, Any],
+    params: dict[str, Any],
+    tuning_params: dict[str, TuningParamConfig],
+) -> dict[str, Any]:
+    data = _deep_copy(manifest)
+    for name, spec in tuning_params.items():
+        if name not in params:
+            continue
+        formatted = _format_param_value(params[name], spec.type)
+        _set_by_path(data, spec.path, formatted)
+    return data
+
+
+def _update_manifest_name(manifest: dict[str, Any], run_id: str) -> dict[str, Any]:
     data = _deep_copy(manifest)
     data.setdefault("metadata", {})
     base_name = data["metadata"].get("name", "spark-app")
     data["metadata"]["name"] = f"{base_name}-r{run_id}"
-
-    spark_conf = data.setdefault("spec", {}).setdefault("sparkConf", {})
-    spark_conf["spark.sql.shuffle.partitions"] = str(variant.shuffle_partitions)
-    spark_conf["spark.kubernetes.executor.request.cores"] = str(variant.executor_cores)
-
-    executor = data["spec"].setdefault("executor", {})
-    executor["cores"] = int(variant.executor_cores)
-    executor["instances"] = int(variant.executor_instances)
-    executor["memory"] = _format_memory_gb(variant.executor_memory_gb)
     return data
 
 
@@ -111,6 +183,7 @@ def _build_tuning_prompt(
     history: list[dict[str, Any]],
     base_params: dict[str, Any],
     constraints: dict[str, Any],
+    response_schema: dict[str, Any],
     history_label: str,
 ) -> tuple[str, str]:
     system = (
@@ -125,54 +198,50 @@ def _build_tuning_prompt(
         "history": history,
         "history_url": history_label,
         "constraints": constraints,
-        "response_schema": {
-            "params": {
-                "spark.sql.shuffle.partitions": "int",
-                "executor.cores": "int",
-                "executor.instances": "int",
-                "executor.memory_gb": "int",
-            },
-            "rationale": "string",
-        },
+        "response_schema": response_schema,
     }
     return system, json.dumps(user, ensure_ascii=True)
 
 
 def _apply_constraints(
     params: dict[str, Any],
-    constraints: dict[str, Any],
+    base_params: dict[str, Any],
+    tuning_params: dict[str, TuningParamConfig],
     driver_memory_gb: int,
-) -> Variant:
-    def _clamp(name: str, value: int) -> int:
-        limits = constraints[name]
-        return max(int(limits["min"]), min(int(limits["max"]), value))
+    max_total_memory_gb: int | None,
+) -> dict[str, Any]:
+    resolved: dict[str, Any] = {}
+    for name, spec in tuning_params.items():
+        value = params.get(name, base_params.get(name, spec.default))
+        if value is None:
+            raise ValueError(f"Missing tuning parameter value for {name}.")
+        coerced = _coerce_param_value(value, spec.type)
+        if spec.min is not None:
+            coerced = max(_coerce_param_value(spec.min, spec.type), coerced)
+        if spec.max is not None:
+            coerced = min(_coerce_param_value(spec.max, spec.type), coerced)
+        resolved[name] = coerced
 
-    shuffle = _clamp("spark.sql.shuffle.partitions", int(params.get("spark.sql.shuffle.partitions", 200)))
-    cores = _clamp("executor.cores", int(params.get("executor.cores", 1)))
-    instances = _clamp("executor.instances", int(params.get("executor.instances", 1)))
-    mem_gb = _clamp("executor.memory_gb", int(params.get("executor.memory_gb", 4)))
+    if max_total_memory_gb is not None:
+        mem_gb = resolved.get("executor.memory_gb")
+        instances = resolved.get("executor.instances")
+        if isinstance(mem_gb, (int, float)) and isinstance(instances, (int, float)):
+            if driver_memory_gb > max_total_memory_gb:
+                raise ValueError(
+                    f"Driver memory ({driver_memory_gb} GB) exceeds total memory limit ({max_total_memory_gb} GB)."
+                )
+            total_gb = driver_memory_gb + int(instances) * int(mem_gb)
+            if total_gb > max_total_memory_gb:
+                max_executors_gb = max_total_memory_gb - driver_memory_gb
+                if max_executors_gb < mem_gb:
+                    mem_gb = max(1, int(max_executors_gb))
+                    instances = max(1, int(max_executors_gb / max(mem_gb, 1)))
+                else:
+                    instances = max(1, int(max_executors_gb / mem_gb))
+                resolved["executor.memory_gb"] = int(mem_gb)
+                resolved["executor.instances"] = int(instances)
 
-    max_total = int(constraints["total_memory_gb"]["max"])
-    if driver_memory_gb > max_total:
-        raise SystemExit(
-            f"Driver memory ({driver_memory_gb} GB) exceeds total memory limit ({max_total} GB)."
-        )
-
-    total_gb = driver_memory_gb + instances * mem_gb
-    if total_gb > max_total:
-        max_executors_gb = max_total - driver_memory_gb
-        if max_executors_gb < mem_gb:
-            mem_gb = max(1, max_executors_gb)
-            instances = max(1, int(max_executors_gb / max(mem_gb, 1)))
-        else:
-            instances = max(1, int(max_executors_gb / mem_gb))
-
-    return Variant(
-        shuffle_partitions=shuffle,
-        executor_cores=cores,
-        executor_instances=instances,
-        executor_memory_gb=mem_gb,
-    )
+    return resolved
 
 
 def _sanitize_value(value: str) -> str:
@@ -297,68 +366,33 @@ def _load_stages_with_retry(
             return candidate_app_id, stages
         time.sleep(poll_seconds)
     if last_error is not None:
-        raise SystemExit(f"Failed to load stages for {candidate_app_id}: {last_error}") from last_error
-    raise SystemExit(f"Timed out waiting for stages for {candidate_app_id}")
+        raise RuntimeError(f"Failed to load stages for {candidate_app_id}: {last_error}") from last_error
+    raise RuntimeError(f"Timed out waiting for stages for {candidate_app_id}")
 
 
-def _generate_variants(
-    base: Variant,
-    max_total_memory_gb: int,
-    driver_memory_gb: int,
+def _generate_random_params(
+    base_params: dict[str, Any],
+    tuning_params: dict[str, TuningParamConfig],
     count: int,
-) -> list[Variant]:
-    cores_candidates = sorted(
-        {
-            max(1, base.executor_cores - 1),
-            base.executor_cores,
-            base.executor_cores + 1,
-            base.executor_cores + 2,
-        }
-    )
-    instances_candidates = sorted(
-        {
-            max(1, base.executor_instances - 2),
-            base.executor_instances,
-            base.executor_instances + 2,
-            base.executor_instances + 4,
-        }
-    )
-    memory_candidates = sorted(
-        {
-            max(1, base.executor_memory_gb - 4),
-            base.executor_memory_gb,
-            base.executor_memory_gb + 4,
-            base.executor_memory_gb + 8,
-        }
-    )
-    shuffle_candidates = sorted(
-        {max(200, int(base.shuffle_partitions / 2)), base.shuffle_partitions, base.shuffle_partitions * 2}
-    )
-
-    all_variants: list[Variant] = []
-    for shuffle in shuffle_candidates:
-        for cores in cores_candidates:
-            for instances in instances_candidates:
-                for mem_gb in memory_candidates:
-                    total_gb = driver_memory_gb + instances * mem_gb
-                    if total_gb > max_total_memory_gb:
-                        continue
-                    all_variants.append(
-                        Variant(
-                            shuffle_partitions=shuffle,
-                            executor_cores=cores,
-                            executor_instances=instances,
-                            executor_memory_gb=mem_gb,
-                        )
-                    )
-
-    if not all_variants:
-        raise SystemExit("No valid variants generated under memory constraint.")
-
+) -> list[dict[str, Any]]:
     random.seed(42)
-    if count >= len(all_variants):
-        return all_variants
-    return random.sample(all_variants, count)
+    variants: list[dict[str, Any]] = []
+    for _ in range(count):
+        chosen: dict[str, Any] = {}
+        for name, spec in tuning_params.items():
+            min_value = spec.min if spec.min is not None else base_params.get(name)
+            max_value = spec.max if spec.max is not None else base_params.get(name)
+            if min_value is None or max_value is None:
+                chosen[name] = base_params.get(name)
+                continue
+            if spec.type == "float":
+                chosen[name] = random.uniform(float(min_value), float(max_value))
+            elif spec.type == "bool":
+                chosen[name] = random.choice([True, False])
+            else:
+                chosen[name] = random.randint(int(min_value), int(max_value))
+        variants.append(chosen)
+    return variants
 
 
 def run_loop(args: argparse.Namespace) -> None:
@@ -367,19 +401,19 @@ def run_loop(args: argparse.Namespace) -> None:
     transform_path = Path(args.transform)
     config_path = Path(args.config)
     if not manifest_path.exists():
-        raise SystemExit(f"Manifest not found: {manifest_path}")
+        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
     if not transform_path.exists():
-        raise SystemExit(f"Transform not found: {transform_path}")
+        raise FileNotFoundError(f"Transform not found: {transform_path}")
     if not config_path.exists():
-        raise SystemExit(f"Config not found: {config_path}")
+        raise FileNotFoundError(f"Config not found: {config_path}")
 
     load_dotenv()
     app_config = AppConfig.load(config_path)
     logger.info("Loaded config from %s (runtime=%s, history=%s, llm=%s)", config_path, app_config.spark_runtime.backend, app_config.spark_history.backend, app_config.llm.backend)
 
     base_manifest = _read_yaml(manifest_path)
-    driver = _get_driver_spec(base_manifest)
-    driver_memory_gb = _parse_memory_gb(str(driver.get("memory", "4g")))
+    driver_memory_raw = _get_by_path(base_manifest, ["spec", "driver", "memory"]) or "4g"
+    driver_memory_gb = _parse_memory_gb(str(driver_memory_raw))
 
     namespace = args.namespace or base_manifest.get("metadata", {}).get("namespace", "default")
     base_manifest.setdefault("metadata", {})["namespace"] = namespace
@@ -389,22 +423,18 @@ def run_loop(args: argparse.Namespace) -> None:
     llm = build_llm_client(app_config)
     logger.info("Starting run loop (iterations=%s, namespace=%s)", args.iterations, namespace)
 
-    constraints = {
-        "spark.sql.shuffle.partitions": {"min": 200, "max": 10000},
-        "executor.cores": {"min": 1, "max": 16},
-        "executor.instances": {"min": 1, "max": 500},
-        "executor.memory_gb": {"min": 1, "max": 256},
-        "total_memory_gb": {"max": args.max_total_memory_gb},
-    }
+    tuning_params = app_config.tuning.params
+    max_total_memory_gb = (
+        args.max_total_memory_gb
+        if args.max_total_memory_gb is not None
+        else app_config.tuning.total_memory_gb_max
+    )
+    constraints = _build_constraints(tuning_params, max_total_memory_gb)
+    response_schema = _build_response_schema(tuning_params)
 
     transform_hash = _hash_file(transform_path)
     history: list[dict[str, Any]] = []
-    base_params = {
-        "spark.sql.shuffle.partitions": int(_get_spark_conf(base_manifest).get("spark.sql.shuffle.partitions", 200)),
-        "executor.cores": int(_get_executor_spec(base_manifest).get("cores", 1)),
-        "executor.instances": int(_get_executor_spec(base_manifest).get("instances", 1)),
-        "executor.memory_gb": _parse_memory_gb(str(_get_executor_spec(base_manifest).get("memory", "4g"))),
-    }
+    base_params = _build_base_params(base_manifest, tuning_params)
 
     for iteration in range(1, args.iterations + 1):
         run_id = _build_run_id(iteration)
@@ -413,50 +443,55 @@ def run_loop(args: argparse.Namespace) -> None:
         logger.info("Run %s: preparing manifest and inputs", run_id)
 
         if iteration == 1 and args.use_base_for_first:
-            variant = Variant(
-                shuffle_partitions=base_params["spark.sql.shuffle.partitions"],
-                executor_cores=base_params["executor.cores"],
-                executor_instances=base_params["executor.instances"],
-                executor_memory_gb=base_params["executor.memory_gb"],
+            chosen = _apply_constraints(
+                {},
+                base_params,
+                tuning_params,
+                driver_memory_gb,
+                max_total_memory_gb,
             )
             rationale = "Base config for first run."
         elif iteration == 1 and args.use_random_for_first:
-            variant = _generate_variants(
-                base=Variant(
-                    shuffle_partitions=base_params["spark.sql.shuffle.partitions"],
-                    executor_cores=base_params["executor.cores"],
-                    executor_instances=base_params["executor.instances"],
-                    executor_memory_gb=base_params["executor.memory_gb"],
-                ),
-                max_total_memory_gb=args.max_total_memory_gb,
-                driver_memory_gb=driver_memory_gb,
-                count=1,
-            )[0]
+            candidate = _generate_random_params(base_params, tuning_params, 1)[0]
+            chosen = _apply_constraints(
+                candidate,
+                base_params,
+                tuning_params,
+                driver_memory_gb,
+                max_total_memory_gb,
+            )
             rationale = "Randomized candidate for first run."
         else:
             system, user = _build_tuning_prompt(
                 history,
                 base_params,
                 constraints,
+                response_schema,
                 history_provider.ui_url("latest"),
             )
             response = llm.chat(system, user)
             try:
                 parsed = json.loads(response.content)
             except json.JSONDecodeError as exc:
-                raise SystemExit(f"LLM response was not valid JSON: {exc}") from exc
-            variant = _apply_constraints(parsed.get("params", {}), constraints, driver_memory_gb)
+                raise ValueError(f"LLM response was not valid JSON: {exc}") from exc
+            chosen = _apply_constraints(
+                parsed.get("params", {}),
+                base_params,
+                tuning_params,
+                driver_memory_gb,
+                max_total_memory_gb,
+            )
             rationale = str(parsed.get("rationale", ""))
 
-        manifest = _update_manifest(manifest=base_manifest, variant=variant, run_id=run_id)
-        logger.info(
-            "Run %s: variant shuffle=%s cores=%s instances=%s mem_gb=%s",
-            run_id,
-            variant.shuffle_partitions,
-            variant.executor_cores,
-            variant.executor_instances,
-            variant.executor_memory_gb,
-        )
+        manifest = _update_manifest_name(base_manifest, run_id=run_id)
+        manifest = _apply_params_to_manifest(manifest, chosen, tuning_params)
+        if "executor.cores" in chosen:
+            _set_by_path(
+                manifest,
+                ["spec", "sparkConf", "spark.kubernetes.executor.request.cores"],
+                str(int(chosen["executor.cores"])),
+            )
+        logger.info("Run %s: chosen params %s", run_id, chosen)
 
         manifest_out = run_dir / f"manifest_{run_id}.yaml"
         manifest_masked_out = run_dir / f"manifest_{run_id}.masked.yaml"
@@ -465,20 +500,18 @@ def run_loop(args: argparse.Namespace) -> None:
         transform_out = run_dir / transform_path.name
         shutil.copy2(transform_path, transform_out)
 
-        requested_gb = driver_memory_gb + variant.executor_instances * variant.executor_memory_gb
+        executor_instances = int(chosen.get("executor.instances", 1))
+        executor_mem_gb = int(chosen.get("executor.memory_gb", 1))
+        requested_gb = driver_memory_gb + executor_instances * executor_mem_gb
+        run_params = dict(chosen)
+        run_params["driver.memory_gb"] = driver_memory_gb
         run_meta = {
             "run_id": run_id,
             "manifest_path": str(manifest_out),
             "manifest_masked_path": str(manifest_masked_out),
             "transform_path": str(transform_out),
             "transform_sha256": transform_hash,
-            "params": {
-                "spark.sql.shuffle.partitions": variant.shuffle_partitions,
-                "executor.cores": variant.executor_cores,
-                "executor.instances": variant.executor_instances,
-                "executor.memory_gb": variant.executor_memory_gb,
-                "driver.memory_gb": driver_memory_gb,
-            },
+            "params": run_params,
             "rationale": rationale,
             "spark_ui": "",
             "runtime_seconds": None,
@@ -542,14 +575,14 @@ def _summarize_runs() -> dict[str, Any]:
     for run_path in sorted(RUNS_DIR.glob("run_*/run_*.json")):
         runs.append(json.loads(run_path.read_text(encoding="utf-8")))
     if not runs:
-        raise SystemExit("No runs found in output/runs.")
+        raise RuntimeError("No runs found in output/runs.")
 
     scored: list[tuple[float, dict[str, Any]]] = []
     for run in runs:
         if run.get("requested_gb_seconds") is not None:
             scored.append((float(run["requested_gb_seconds"]), run))
     if not scored:
-        raise SystemExit("No runs with requested_gb_seconds recorded.")
+        raise RuntimeError("No runs with requested_gb_seconds recorded.")
 
     scored.sort(key=lambda item: item[0])
     best_score, best = scored[0]
@@ -584,8 +617,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-total-memory-gb",
         type=int,
-        default=500,
-        help="Max total requested memory (driver + executors).",
+        default=None,
+        help="Max total requested memory (driver + executors). Overrides config when set.",
     )
     parser.add_argument(
         "--use-base-for-first",
@@ -619,10 +652,14 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     if args.use_base_for_first and args.use_random_for_first:
-        raise SystemExit("Choose only one of --use-base-for-first or --use-random-for-first.")
+        raise ValueError("Choose only one of --use-base-for-first or --use-random-for-first.")
     _ensure_dirs()
-    _setup_logging()
-    run_loop(args)
+    logger = _setup_logging()
+    try:
+        run_loop(args)
+    except Exception:
+        logger.exception("Unhandled error")
+        raise
 
 
 if __name__ == "__main__":

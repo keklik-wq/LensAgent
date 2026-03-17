@@ -16,3 +16,32 @@ spark_history:
     base_url: "http://local-history"
     fixtures_path: "examples/local/history"
     default_app_id: "local-app-001"
+
+tuning:
+  params:
+    spark.sql.shuffle.partitions:
+      path:
+        - "spec"
+        - "sparkConf"
+        - "spark.sql.shuffle.partitions"
+      type: "int"
+      min: 200
+      max: 10000
+    executor.cores:
+      path: "spec.executor.cores"
+      type: "int"
+      min: 1
+      max: 16
+    executor.instances:
+      path: "spec.executor.instances"
+      type: "int"
+      min: 1
+      max: 500
+    executor.memory_gb:
+      path: "spec.executor.memory"
+      type: "memory_gb"
+      min: 1
+      max: 256
+  constraints:
+    total_memory_gb:
+      max: 500
