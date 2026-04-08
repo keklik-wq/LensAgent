@@ -29,8 +29,12 @@ def test_run_loop_with_local_backends(tmp_path: Path, monkeypatch) -> None:
     main.run_loop(args)
 
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
-    first_run = json.loads((output_dir / "runs" / "run_001" / "run_001.json").read_text(encoding="utf-8"))
-    second_run = json.loads((output_dir / "runs" / "run_002" / "run_002.json").read_text(encoding="utf-8"))
+    first_run = json.loads(
+        (output_dir / "runs" / "run_001" / "run_001.json").read_text(encoding="utf-8")
+    )
+    second_run = json.loads(
+        (output_dir / "runs" / "run_002" / "run_002.json").read_text(encoding="utf-8")
+    )
 
     assert summary["best_run_id"] == "001"
     assert first_run["application_state"] == "COMPLETED"

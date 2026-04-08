@@ -34,9 +34,5 @@ class LlmRouterClient:
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         raw = self._client.post_json("/v1/chat/completions", payload, headers=headers)
-        content = (
-            raw.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        )
+        content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
         return LlmResponse(content=content, raw=raw)

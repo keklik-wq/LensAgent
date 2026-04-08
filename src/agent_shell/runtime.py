@@ -21,8 +21,7 @@ class SparkRuntime(Protocol):
         manifest: dict[str, Any],
         namespace: str,
         driver_container: str | None = None,
-    ) -> SparkRunResult:
-        ...
+    ) -> SparkRunResult: ...
 
 
 class KubernetesSparkRuntime:
@@ -216,7 +215,9 @@ class SparkSubmitRuntime:
 
         app_file = str(spec.get("mainApplicationFile", ""))
         if not app_file:
-            raise SystemExit("Manifest spec.mainApplicationFile is required for spark_submit runtime.")
+            raise SystemExit(
+                "Manifest spec.mainApplicationFile is required for spark_submit runtime."
+            )
         command.append(_normalize_app_path(app_file))
         for arg in spec.get("arguments", []) or []:
             command.append(str(arg))

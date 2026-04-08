@@ -12,6 +12,7 @@ dist/
 .coverage
 coverage.xml
 .venv/
+.venv*/
 venv/
 env/
 input/

@@ -47,6 +47,46 @@ python main.py \
 
 Artifacts are written to `output/`.
 
+## Dev Environment
+
+Primary path: `uv` with the checked-in lockfile.
+
+```bash
+uv python install 3.10
+uv sync --extra dev
+```
+
+That creates a reproducible `.venv` from [`uv.lock`](./uv.lock) and installs lint/test tooling.
+
+If `.venv` already exists from another OS or an older toolchain and `uv sync` cannot reuse it, create a clean environment in a separate directory:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-dev uv sync --extra dev --frozen
+```
+
+Run checks with:
+
+```bash
+uv run ruff format --check .
+uv run ruff check .
+uv run pytest -q
+```
+
+Fallback when `uv` is unavailable:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+Windows PowerShell activation:
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
 ### Spark standalone mode (Docker Compose)
 
 ```bash

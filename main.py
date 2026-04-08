@@ -23,7 +23,6 @@ from src.agent_shell.factory import (
     build_spark_runtime,
 )
 
-
 OUTPUT_DIR = Path("output")
 RUNS_DIR = OUTPUT_DIR / "runs"
 LOG_DIR = OUTPUT_DIR / "logs"
@@ -91,7 +90,7 @@ def _coerce_param_value(value: Any, param_type: str) -> Any:
             return int(value)
         return int(_parse_memory_gb(str(value)))
     return str(value)
-                           
+
 
 def _format_param_value(value: Any, param_type: str) -> Any:
     if param_type == "memory_gb":
@@ -143,7 +142,9 @@ def _build_base_params(
         raw = _get_by_path(manifest, spec.path)
         if raw is None:
             if spec.default is None:
-                raise ValueError(f"Manifest missing value for tuning param {name} ({'.'.join(spec.path)}).")
+                raise ValueError(
+                    f"Manifest missing value for tuning param {name} ({'.'.join(spec.path)})."
+                )
             raw = spec.default
         base_params[name] = _coerce_param_value(raw, spec.type)
     return base_params
@@ -339,7 +340,7 @@ def _collect_metrics_from_stages(stages: list[dict[str, Any]]) -> dict[str, Any]
     return {
         "status": "COMPLETE" if "COMPLETE" in status_set else "UNKNOWN",
         "runtime_seconds": runtime_seconds,
-        "spill_gb": (memory_spill + disk_spill) / (1024 ** 3),
+        "spill_gb": (memory_spill + disk_spill) / (1024**3),
     }
 
 
@@ -366,7 +367,9 @@ def _load_stages_with_retry(
             return candidate_app_id, stages
         time.sleep(poll_seconds)
     if last_error is not None:
-        raise RuntimeError(f"Failed to load stages for {candidate_app_id}: {last_error}") from last_error
+        raise RuntimeError(
+            f"Failed to load stages for {candidate_app_id}: {last_error}"
+        ) from last_error
     raise RuntimeError(f"Timed out waiting for stages for {candidate_app_id}")
 
 
@@ -409,7 +412,13 @@ def run_loop(args: argparse.Namespace) -> None:
 
     load_dotenv()
     app_config = AppConfig.load(config_path)
-    logger.info("Loaded config from %s (runtime=%s, history=%s, llm=%s)", config_path, app_config.spark_runtime.backend, app_config.spark_history.backend, app_config.llm.backend)
+    logger.info(
+        "Loaded config from %s (runtime=%s, history=%s, llm=%s)",
+        config_path,
+        app_config.spark_runtime.backend,
+        app_config.spark_history.backend,
+        app_config.llm.backend,
+    )
 
     base_manifest = _read_yaml(manifest_path)
     driver_memory_raw = _get_by_path(base_manifest, ["spec", "driver", "memory"]) or "4g"
@@ -526,10 +535,14 @@ def run_loop(args: argparse.Namespace) -> None:
             "driver_logs": "",
             "driver_logs_path": "",
         }
-        (run_dir / f"run_{run_id}.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
+        (run_dir / f"run_{run_id}.json").write_text(
+            json.dumps(run_meta, indent=2), encoding="utf-8"
+        )
 
         logger.info("Run %s: submitting Spark job", run_id)
-        result = runtime.run_application(manifest, namespace, driver_container=args.driver_container)
+        result = runtime.run_application(
+            manifest, namespace, driver_container=args.driver_container
+        )
         driver_logs_path = run_dir / "driver.log"
         driver_logs_path.write_text(result.driver_logs or "", encoding="utf-8")
         resolved_app_id, stages = _load_stages_with_retry(
@@ -560,9 +573,13 @@ def run_loop(args: argparse.Namespace) -> None:
             }
         )
         if run_meta["runtime_seconds"] is not None:
-            run_meta["requested_gb_seconds"] = run_meta["requested_gb"] * run_meta["runtime_seconds"]
+            run_meta["requested_gb_seconds"] = (
+                run_meta["requested_gb"] * run_meta["runtime_seconds"]
+            )
 
-        (run_dir / f"run_{run_id}.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
+        (run_dir / f"run_{run_id}.json").write_text(
+            json.dumps(run_meta, indent=2), encoding="utf-8"
+        )
         history.append(run_meta)
 
     summary = _summarize_runs()
@@ -608,12 +625,16 @@ def _summarize_runs() -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Spark tuning loop with replaceable infrastructure backends.")
+    parser = argparse.ArgumentParser(
+        description="Spark tuning loop with replaceable infrastructure backends."
+    )
     parser.add_argument("--manifest", required=True, help="Path to SparkApplication YAML.")
     parser.add_argument("--transform", required=True, help="Path to transformation code file.")
     parser.add_argument("--config", required=True, help="Path to config.yaml.")
     parser.add_argument("--history-url", default=None, help="History base URL override.")
-    parser.add_argument("--iterations", type=int, required=True, help="Number of iterations to run.")
+    parser.add_argument(
+        "--iterations", type=int, required=True, help="Number of iterations to run."
+    )
     parser.add_argument(
         "--max-total-memory-gb",
         type=int,

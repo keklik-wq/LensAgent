@@ -103,7 +103,7 @@ class AppConfig:
     tuning: TuningConfig
 
     @staticmethod
-    def load(path: str | Path) -> "AppConfig":
+    def load(path: str | Path) -> AppConfig:
         raw = yaml.safe_load(Path(path).read_text())
         if not isinstance(raw, dict):
             raise SystemExit(f"Config at {path} is empty or invalid YAML.")
@@ -187,7 +187,9 @@ def _coerce_spark_runtime(raw: Any) -> SparkRuntimeConfig:
         return SparkRuntimeConfig(
             backend=backend,
             kubernetes=KubernetesRuntimeConfig(
-                kube_context=_coerce_optional_str((raw.get("kubernetes") or {}).get("kube_context")),
+                kube_context=_coerce_optional_str(
+                    (raw.get("kubernetes") or {}).get("kube_context")
+                ),
             ),
             spark_submit=None,
             local=None,
