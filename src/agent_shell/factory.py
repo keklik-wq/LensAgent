@@ -4,6 +4,7 @@ from .clients import LlmClient, LocalLlmClient
 from .config import AppConfig
 from .history import HttpSparkHistoryProvider, LocalSparkHistoryProvider, SparkHistoryProvider
 from .llm_router import LlmRouterClient
+from .ollama import OllamaLlmClient
 from .runtime import KubernetesSparkRuntime, LocalSparkRuntime, SparkRuntime, SparkSubmitRuntime
 
 
@@ -22,6 +23,16 @@ def build_llm_client(config: AppConfig) -> LlmClient:
         if config.llm.local is None:
             raise SystemExit("llm.local config is required for local backend.")
         return LocalLlmClient(strategy=config.llm.local.strategy)
+    if config.llm.backend == "ollama":
+        if config.llm.ollama is None:
+            raise SystemExit("llm.ollama config is required for ollama backend.")
+        return OllamaLlmClient(
+            base_url=config.llm.ollama.base_url,
+            model=config.llm.ollama.model,
+            timeout_seconds=config.llm.ollama.timeout_seconds,
+            keep_alive=config.llm.ollama.keep_alive,
+            options=config.llm.ollama.options,
+        )
     raise SystemExit(f"Unsupported llm backend: {config.llm.backend}")
 
 

@@ -13,6 +13,29 @@ services:
       timeout: 3s
       retries: 20
 
+  ollama:
+    image: ollama/ollama
+    profiles: ["ollama"]
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
   spark-history:
     build: .
     working_dir: /workspace
@@ -67,8 +90,8 @@ services:
       - spark-events:/tmp/spark-events
     environment:
       SPARK_NO_DAEMONIZE: "true"
-      SPARK_WORKER_CORES: "2"
-      SPARK_WORKER_MEMORY: "2g"
+      SPARK_WORKER_CORES: "4"
+      SPARK_WORKER_MEMORY: "8g"
     command:
       [
         "bash",
@@ -106,8 +129,6 @@ services:
         "examples/docker/config.docker.yaml",
         "--history-url",
         "http://spark-history:18080",
-        "--iterations",
-        "2",
         "--use-base-for-first"
       ]
 
@@ -142,10 +163,43 @@ services:
         "examples/docker/config.standalone.yaml",
         "--history-url",
         "http://spark-history:18080",
-        "--iterations",
-        "2",
+        "--use-base-for-first"
+      ]
+
+  lens-agent-ollama:
+    build: .
+    working_dir: /workspace
+    profiles: ["ollama"]
+    volumes:
+      - .:/workspace
+      - spark-events:/tmp/spark-events
+    depends_on:
+      ollama:
+        condition: service_healthy
+      spark-history:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+      spark-worker:
+        condition: service_started
+    environment:
+      PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: "INFO"
+    command:
+      [
+        "python3",
+        "main.py",
+        "--manifest",
+        "examples/docker/sparkapp.yaml",
+        "--transform",
+        "examples/docker/job.py",
+        "--config",
+        "examples/docker/config.ollama.yaml",
+        "--history-url",
+        "http://spark-history:18080",
         "--use-base-for-first"
       ]
 
 volumes:
   spark-events:
+  ollama-data:

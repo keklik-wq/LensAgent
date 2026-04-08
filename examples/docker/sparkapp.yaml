@@ -22,4 +22,4 @@ spec:
     memory: "1g"
   arguments:
     - "--rows"
-    - "2000"
+    - "8000"

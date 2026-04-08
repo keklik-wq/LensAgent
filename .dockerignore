@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+.venv*
+venv
+env
+__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.pyc
+*.pyo
+*.pyd
+output
+session_notes

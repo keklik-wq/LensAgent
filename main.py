@@ -133,6 +133,21 @@ def _build_response_schema(tuning_params: dict[str, TuningParamConfig]) -> dict[
     return schema
 
 
+def _build_tunable_param_specs(
+    tuning_params: dict[str, TuningParamConfig],
+) -> dict[str, dict[str, Any]]:
+    specs: dict[str, dict[str, Any]] = {}
+    for name, spec in tuning_params.items():
+        specs[name] = {
+            "type": spec.type,
+            "min": spec.min,
+            "max": spec.max,
+            "default": spec.default,
+            "path": spec.path,
+        }
+    return specs
+
+
 def _build_base_params(
     manifest: dict[str, Any],
     tuning_params: dict[str, TuningParamConfig],
@@ -181,27 +196,140 @@ def _hash_file(path: Path) -> str:
 
 
 def _build_tuning_prompt(
+    system_prompt: str,
     history: list[dict[str, Any]],
     base_params: dict[str, Any],
+    tunable_param_specs: dict[str, dict[str, Any]],
     constraints: dict[str, Any],
     response_schema: dict[str, Any],
     history_label: str,
 ) -> tuple[str, str]:
-    system = (
-        "You are a Spark tuning assistant. "
-        "You must propose the next run parameters to minimize requested_gb_seconds, "
-        "reduce spill_gb, and avoid too many small files. "
-        "Return ONLY valid JSON that matches the schema exactly."
-    )
+    best_previous_run = _select_best_history_entry(history)
+    latest_run = history[-1] if history else None
     user = {
         "task": "Propose next Spark config parameters for the next run.",
         "base_params": base_params,
+        "tunable_params": tunable_param_specs,
         "history": history,
+        "best_previous_run": best_previous_run,
+        "latest_run": latest_run,
         "history_url": history_label,
         "constraints": constraints,
         "response_schema": response_schema,
     }
-    return system, json.dumps(user, ensure_ascii=True)
+    return system_prompt, json.dumps(user, ensure_ascii=True)
+
+
+def _build_retry_user_prompt(
+    user_prompt: str,
+    raw_response: str,
+    error_message: str,
+    attempt: int,
+) -> str:
+    payload = json.loads(user_prompt)
+    payload["retry_feedback"] = {
+        "attempt": attempt,
+        "error": error_message,
+        "invalid_response_excerpt": raw_response[:1000],
+        "instruction": "Your previous response was not valid JSON. Return ONLY valid JSON that matches response_schema exactly.",
+    }
+    return json.dumps(payload, ensure_ascii=True)
+
+
+def _select_best_history_entry(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    scored = [item for item in history if item.get("requested_gb_seconds") is not None]
+    if not scored:
+        return None
+    return min(scored, key=lambda item: float(item["requested_gb_seconds"]))
+
+
+def _build_llm_history_entry(run_meta: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "run_id": run_meta.get("run_id"),
+        "params": run_meta.get("params"),
+        "rationale": run_meta.get("rationale"),
+        "application_state": run_meta.get("application_state"),
+        "runtime_seconds": run_meta.get("runtime_seconds"),
+        "requested_gb": run_meta.get("requested_gb"),
+        "requested_gb_seconds": run_meta.get("requested_gb_seconds"),
+        "spill_gb": run_meta.get("spill_gb"),
+        "output_files": run_meta.get("output_files"),
+        "small_files": run_meta.get("small_files"),
+        "spark_ui": run_meta.get("spark_ui"),
+        "history_api": run_meta.get("history_api"),
+    }
+
+
+def _params_signature(
+    params: dict[str, Any], names: list[str] | tuple[str, ...] | None = None
+) -> tuple[tuple[str, Any], ...]:
+    if names is None:
+        items = params.items()
+    else:
+        items = ((name, params.get(name)) for name in names)
+    return tuple(sorted(items))
+
+
+def _history_param_signatures(
+    history: list[dict[str, Any]],
+    tuning_param_names: list[str],
+) -> set[tuple[tuple[str, Any], ...]]:
+    signatures: set[tuple[tuple[str, Any], ...]] = set()
+    for item in history:
+        params = item.get("params")
+        if isinstance(params, dict):
+            signatures.add(_params_signature(params, tuning_param_names))
+    return signatures
+
+
+def _next_candidate_values(current: Any, spec: TuningParamConfig) -> list[Any]:
+    if spec.type == "bool":
+        return [not bool(current)]
+    if spec.type == "float":
+        current_value = float(current)
+        step = max(abs(current_value) * 0.1, 0.1)
+        return [current_value - step, current_value + step]
+    if spec.type == "memory_gb":
+        current_value = int(current)
+        return [current_value - 1, current_value + 1, current_value - 2, current_value + 2]
+    current_value = int(current)
+    return [current_value - 1, current_value + 1, current_value - 2, current_value + 2]
+
+
+def _resolve_duplicate_params(
+    params: dict[str, Any],
+    history: list[dict[str, Any]],
+    base_params: dict[str, Any],
+    tuning_params: dict[str, TuningParamConfig],
+    driver_memory_gb: int,
+    max_total_memory_gb: int | None,
+) -> dict[str, Any]:
+    tuning_param_names = list(tuning_params.keys())
+    existing = _history_param_signatures(history, tuning_param_names)
+    signature = _params_signature(params, tuning_param_names)
+    if signature not in existing:
+        return params
+
+    for name, spec in tuning_params.items():
+        if name not in params:
+            continue
+        for candidate_value in _next_candidate_values(params[name], spec):
+            candidate = dict(params)
+            candidate[name] = candidate_value
+            try:
+                resolved = _apply_constraints(
+                    candidate,
+                    base_params,
+                    tuning_params,
+                    driver_memory_gb,
+                    max_total_memory_gb,
+                )
+            except (TypeError, ValueError):
+                continue
+            if _params_signature(resolved, tuning_param_names) not in existing:
+                return resolved
+
+    raise ValueError("Could not find a unique parameter configuration for the next run.")
 
 
 def _apply_constraints(
@@ -398,6 +526,38 @@ def _generate_random_params(
     return variants
 
 
+def _request_tuning_candidate(
+    llm: Any,
+    system_prompt: str,
+    user_prompt: str,
+    llm_json_retries: int,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    current_user_prompt = user_prompt
+    last_error: Exception | None = None
+    for attempt in range(1, llm_json_retries + 2):
+        response = llm.chat(system_prompt, current_user_prompt)
+        try:
+            return json.loads(response.content)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            if attempt > llm_json_retries:
+                break
+            logger.warning(
+                "LLM returned invalid JSON on attempt %s/%s: %s",
+                attempt,
+                llm_json_retries + 1,
+                exc,
+            )
+            current_user_prompt = _build_retry_user_prompt(
+                current_user_prompt,
+                response.content,
+                str(exc),
+                attempt + 1,
+            )
+    raise ValueError(f"LLM response was not valid JSON: {last_error}") from last_error
+
+
 def run_loop(args: argparse.Namespace) -> None:
     logger = logging.getLogger("lens-agent")
     manifest_path = Path(args.manifest)
@@ -431,6 +591,8 @@ def run_loop(args: argparse.Namespace) -> None:
     history_provider = build_spark_history_provider(app_config, base_url_override=args.history_url)
     llm = build_llm_client(app_config)
     logger.info("Starting run loop (iterations=%s, namespace=%s)", args.iterations, namespace)
+    iterations = args.iterations if args.iterations is not None else app_config.tuning.iterations
+    logger.info("Starting run loop (iterations=%s, namespace=%s)", iterations, namespace)
 
     tuning_params = app_config.tuning.params
     max_total_memory_gb = (
@@ -440,12 +602,13 @@ def run_loop(args: argparse.Namespace) -> None:
     )
     constraints = _build_constraints(tuning_params, max_total_memory_gb)
     response_schema = _build_response_schema(tuning_params)
+    tunable_param_specs = _build_tunable_param_specs(tuning_params)
 
     transform_hash = _hash_file(transform_path)
     history: list[dict[str, Any]] = []
     base_params = _build_base_params(base_manifest, tuning_params)
 
-    for iteration in range(1, args.iterations + 1):
+    for iteration in range(1, iterations + 1):
         run_id = _build_run_id(iteration)
         run_dir = RUNS_DIR / f"run_{run_id}"
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -472,17 +635,21 @@ def run_loop(args: argparse.Namespace) -> None:
             rationale = "Randomized candidate for first run."
         else:
             system, user = _build_tuning_prompt(
+                app_config.tuning.prompt,
                 history,
                 base_params,
+                tunable_param_specs,
                 constraints,
                 response_schema,
                 history_provider.ui_url("latest"),
             )
-            response = llm.chat(system, user)
-            try:
-                parsed = json.loads(response.content)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"LLM response was not valid JSON: {exc}") from exc
+            parsed = _request_tuning_candidate(
+                llm=llm,
+                system_prompt=system,
+                user_prompt=user,
+                llm_json_retries=app_config.tuning.llm_json_retries,
+                logger=logger,
+            )
             chosen = _apply_constraints(
                 parsed.get("params", {}),
                 base_params,
@@ -491,6 +658,14 @@ def run_loop(args: argparse.Namespace) -> None:
                 max_total_memory_gb,
             )
             rationale = str(parsed.get("rationale", ""))
+            chosen = _resolve_duplicate_params(
+                chosen,
+                history,
+                base_params,
+                tuning_params,
+                driver_memory_gb,
+                max_total_memory_gb,
+            )
 
         manifest = _update_manifest_name(base_manifest, run_id=run_id)
         manifest = _apply_params_to_manifest(manifest, chosen, tuning_params)
@@ -580,7 +755,7 @@ def run_loop(args: argparse.Namespace) -> None:
         (run_dir / f"run_{run_id}.json").write_text(
             json.dumps(run_meta, indent=2), encoding="utf-8"
         )
-        history.append(run_meta)
+        history.append(_build_llm_history_entry(run_meta))
 
     summary = _summarize_runs()
     (OUTPUT_DIR / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -633,7 +808,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", required=True, help="Path to config.yaml.")
     parser.add_argument("--history-url", default=None, help="History base URL override.")
     parser.add_argument(
-        "--iterations", type=int, required=True, help="Number of iterations to run."
+        "--iterations",
+        type=int,
+        default=None,
+        help="Number of iterations to run. Overrides tuning.iterations when set.",
     )
     parser.add_argument(
         "--max-total-memory-gb",

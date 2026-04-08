@@ -1,7 +1,7 @@
 # Spark LLM Tuning Loop
 
 This repo now treats every external dependency as a replaceable backend:
-- `llm`: `router` or `local`
+- `llm`: `router`, `local`, or `ollama`
 - `spark_runtime`: `kubernetes`, `spark_submit`, or `local`
 - `spark_history`: `http` or `local`
 - `tuning`: configurable parameter map for LLM-tuned Spark settings
@@ -29,6 +29,14 @@ Use:
 
 This mode runs end-to-end without Kubernetes and is intended for local development, CI smoke checks, and parallel agent work.
 
+### Local model run
+Use:
+- `llm.backend=ollama`
+- `spark_runtime.backend=spark_submit` or `kubernetes`
+- `spark_history.backend=http` or `local`
+
+This backend targets a reachable Ollama HTTP endpoint, so it works for Docker dev now and remains usable later from Kubernetes.
+
 ## Local Docker Compose
 
 ```bash
@@ -41,11 +49,33 @@ python main.py \
   --manifest examples/docker/sparkapp.yaml \
   --transform examples/docker/job.py \
   --config examples/docker/config.docker.yaml \
-  --iterations 2 \
   --use-base-for-first
 ```
 
 Artifacts are written to `output/`.
+
+### Local Docker Compose with Ollama
+
+Start the local model service:
+```bash
+docker compose --profile ollama up -d ollama spark-history
+```
+
+The `ollama` service is configured to request all NVIDIA GPUs through Docker Compose. Per Docker's GPU reservation rules, this requires a working NVIDIA driver and container toolkit on the host.
+
+Pull a model into the persistent Ollama volume:
+```bash
+docker compose --profile ollama exec ollama ollama pull qwen2.5:3b
+```
+
+Run the tuning loop against the local model:
+```bash
+docker compose --profile ollama run --rm lens-agent-ollama
+```
+
+This path uses [`examples/docker/config.ollama.yaml`](./examples/docker/config.ollama.yaml).
+The default Ollama dev config uses a longer timeout because first-token latency on CPU can easily exceed a minute.
+The Ollama dev runner submits Spark jobs to the local Spark standalone cluster at `spark://spark-master:7077`, not to `local[*]`.
 
 ## Dev Environment
 
@@ -99,13 +129,14 @@ This uses `spark_submit` against a local Spark standalone cluster defined in `do
 
 ```yaml
 llm:
-  backend: "router"
-  router:
-    base_url: "https://llm-router.internal"
-    api_key_env: "LLM_ROUTER_API_KEY"
-    model: "gpt-4o-mini"
-    timeout_seconds: 30
-    allow_models: ["gpt-4o-mini"]
+  backend: "ollama"
+  ollama:
+    base_url: "http://ollama:11434"
+    model: "qwen2.5:3b"
+    timeout_seconds: 90
+    keep_alive: "30m"
+    options:
+      num_predict: 256
 
 spark_runtime:
   backend: "kubernetes"
@@ -119,6 +150,10 @@ spark_history:
     timeout_seconds: 30
 
 tuning:
+  iterations: 2
+  prompt: |
+    You are a Spark tuning assistant.
+    ...
   params:
     spark.sql.shuffle.partitions:
       path:
@@ -149,6 +184,8 @@ tuning:
 ```
 
 Legacy `llm_router:` config is still accepted and normalized to the new structure.
+The number of tuning-loop runs now defaults from `tuning.iterations`, and `--iterations` only overrides it.
+The tuning system prompt is configurable through `tuning.prompt`.
 
 ## Why this refactor
 
