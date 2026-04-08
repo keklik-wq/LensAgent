@@ -41,6 +41,7 @@ class LlmConfig:
 @dataclass(frozen=True)
 class KubernetesRuntimeConfig:
     kube_context: str | None
+    kubeconfig_path: str | None
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,7 @@ def _normalize_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
             "backend": "kubernetes",
             "kubernetes": {
                 "kube_context": None,
+                "kubeconfig_path": None,
             },
         }
     if "spark_history" not in data:
@@ -230,6 +232,9 @@ def _coerce_spark_runtime(raw: Any) -> SparkRuntimeConfig:
             kubernetes=KubernetesRuntimeConfig(
                 kube_context=_coerce_optional_str(
                     (raw.get("kubernetes") or {}).get("kube_context")
+                ),
+                kubeconfig_path=_coerce_optional_str(
+                    (raw.get("kubernetes") or {}).get("kubeconfig_path")
                 ),
             ),
             spark_submit=None,

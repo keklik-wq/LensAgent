@@ -31,6 +31,8 @@ spark_history:
     assert cfg.llm.router is not None
     assert cfg.llm.router.model == "m1"
     assert cfg.spark_runtime.backend == "kubernetes"
+    assert cfg.spark_runtime.kubernetes is not None
+    assert cfg.spark_runtime.kubernetes.kubeconfig_path is None
     assert cfg.tuning.iterations == 2
     assert "requested_gb_seconds" in cfg.tuning.prompt
     assert cfg.tuning.llm_json_retries == 2
@@ -117,6 +119,36 @@ spark_history:
     assert cfg.llm.ollama.base_url == "http://ollama:11434"
     assert cfg.llm.ollama.options == {"num_predict": 128}
     assert isinstance(client, OllamaLlmClient)
+
+
+def test_loads_kubernetes_kubeconfig_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+llm:
+  backend: "local"
+  local:
+    strategy: "best_previous"
+spark_runtime:
+  backend: "kubernetes"
+  kubernetes:
+    kube_context: "dev-cluster"
+    kubeconfig_path: "/tmp/kubeconfig"
+spark_history:
+  backend: "local"
+  local:
+    fixtures_path: "examples/local/history"
+    base_url: "http://history"
+    default_app_id: "local-app-001"
+""",
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig.load(config_path)
+
+    assert cfg.spark_runtime.kubernetes is not None
+    assert cfg.spark_runtime.kubernetes.kube_context == "dev-cluster"
+    assert cfg.spark_runtime.kubernetes.kubeconfig_path == "/tmp/kubeconfig"
 
 
 def test_ollama_client_parses_chat_response() -> None:

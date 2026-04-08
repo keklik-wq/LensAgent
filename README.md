@@ -37,6 +37,91 @@ Use:
 
 This backend targets a reachable Ollama HTTP endpoint, so it works for Docker dev now and remains usable later from Kubernetes.
 
+## Kubernetes Run
+
+Use this mode when you want the tuning loop to submit `SparkApplication` resources to a Kubernetes cluster through the Spark Operator.
+
+Prerequisites:
+- a working kubeconfig or in-cluster Kubernetes credentials
+- Spark Operator installed in the target cluster
+- a reachable Spark History Server URL for `spark_history.http.base_url`
+- an LLM endpoint reachable from the tuning process
+
+Install the Kubernetes runtime dependency:
+```bash
+uv pip install -e ".[kubernetes]"
+```
+
+Choose one of these LLM backends:
+- `llm.backend=router` for a remote router/OpenAI-compatible service
+- `llm.backend=ollama` for an Ollama endpoint reachable from where `main.py` runs
+
+Minimal config shape:
+```yaml
+llm:
+  backend: "router"
+  router:
+    base_url: "https://llm-router.internal"
+    api_key_env: "LLM_ROUTER_API_KEY"
+    model: "gpt-4o-mini"
+    timeout_seconds: 30
+    allow_models: ["gpt-4o-mini"]
+
+spark_runtime:
+  backend: "kubernetes"
+  kubernetes:
+    kube_context: "my-context"
+    kubeconfig_path: "/path/to/kubeconfig"
+
+spark_history:
+  backend: "http"
+  http:
+    base_url: "https://spark-history.internal"
+    timeout_seconds: 30
+
+tuning:
+  iterations: 5
+  llm_json_retries: 2
+  prompt: |
+    You are a Spark tuning assistant.
+    Return ONLY valid JSON that matches the schema exactly.
+  params:
+    spark.sql.shuffle.partitions:
+      path: "spec.sparkConf.spark.sql.shuffle.partitions"
+      type: "int"
+      min: 100
+      max: 2000
+```
+
+Run from your workstation or from a pod with cluster access:
+```bash
+python main.py \
+  --manifest path/to/sparkapp.yaml \
+  --transform path/to/job.py \
+  --config path/to/config.yaml \
+  --namespace my-namespace \
+  --use-base-for-first
+```
+
+Useful optional flags:
+- `--kube-context` overrides `spark_runtime.kubernetes.kube_context`
+- `--history-url` overrides `spark_history.http.base_url`
+- `--iterations` overrides `tuning.iterations`
+- `--max-total-memory-gb` overrides `tuning.constraints.total_memory_gb.max`
+- `--driver-container` selects the driver container when driver logs are needed
+
+How it works in Kubernetes mode:
+- `main.py` loads the base SparkApplication manifest
+- tuned parameters are applied to a per-run manifest
+- the Kubernetes runtime creates or replaces the `SparkApplication` resource
+- the loop waits for completion, fetches stage data from Spark History Server, and feeds the summarized history back into the LLM for the next iteration
+
+Notes:
+- `kube_context` is the name of a context inside the kubeconfig, not a file path
+- `kubeconfig_path` is an optional explicit path to the kubeconfig file
+- if `kubeconfig_path` is omitted, the Kubernetes Python client uses the default kubeconfig location
+- if loading local kubeconfig fails, the runtime falls back to in-cluster authentication
+
 ## Local Docker Compose
 
 ```bash
@@ -142,6 +227,7 @@ spark_runtime:
   backend: "kubernetes"
   kubernetes:
     kube_context: null
+    kubeconfig_path: null
 
 spark_history:
   backend: "http"

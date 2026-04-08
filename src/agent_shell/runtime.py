@@ -25,13 +25,13 @@ class SparkRuntime(Protocol):
 
 
 class KubernetesSparkRuntime:
-    def __init__(self, kube_context: str | None) -> None:
+    def __init__(self, kube_context: str | None, kubeconfig_path: str | None = None) -> None:
         from kubernetes import client as k8s_client
         from kubernetes import config as k8s_config
 
         self._k8s_client = k8s_client
         try:
-            k8s_config.load_kube_config(context=kube_context)
+            k8s_config.load_kube_config(config_file=kubeconfig_path, context=kube_context)
         except Exception:
             k8s_config.load_incluster_config()
         self._core_api = k8s_client.CoreV1Api()

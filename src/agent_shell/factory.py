@@ -41,7 +41,10 @@ def build_spark_runtime(config: AppConfig, kube_context: str | None = None) -> S
         runtime_cfg = config.spark_runtime.kubernetes
         if runtime_cfg is None:
             raise SystemExit("spark_runtime.kubernetes config is required.")
-        return KubernetesSparkRuntime(kube_context=kube_context or runtime_cfg.kube_context)
+        return KubernetesSparkRuntime(
+            kube_context=kube_context or runtime_cfg.kube_context,
+            kubeconfig_path=runtime_cfg.kubeconfig_path,
+        )
     if config.spark_runtime.backend == "spark_submit":
         runtime_cfg = config.spark_runtime.spark_submit
         if runtime_cfg is None:

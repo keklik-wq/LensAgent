@@ -12,6 +12,7 @@ spark_runtime:
   backend: "kubernetes"
   kubernetes:
     kube_context: null
+    kubeconfig_path: null
 
 spark_history:
   backend: "http"
