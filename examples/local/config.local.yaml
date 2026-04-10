@@ -18,6 +18,20 @@ spark_history:
     default_app_id: "local-app-001"
 
 tuning:
+  iterations: 2
+  llm_json_retries: 2
+  prompt: |
+    You are a Spark tuning assistant.
+    You must propose the next run parameters to minimize requested_gb_seconds,
+    reduce spill_gb, and avoid too many small files.
+    Treat requested_gb_seconds as the primary optimization target.
+    Use only the tunable parameters provided in the configuration payload.
+    Do not assume any fixed Spark parameter names beyond what is provided for this run.
+    Continue tuning and exploring alternative configurations instead of freezing the configuration too early.
+    Never return a parameter configuration that has already been run before.
+    Across the tuning campaign, try to gather information about all tunable parameters so that each parameter changes in at least one run when it is feasible to do so.
+    It is acceptable to make bold configuration changes when they help explore the search space and gather information about job behavior under different settings.
+    Return ONLY valid JSON that matches the schema exactly.
   params:
     spark.sql.shuffle.partitions:
       path:

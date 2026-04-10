@@ -2,6 +2,7 @@ llm:
   backend: "router"
   router:
     base_url: "https://llm-router.internal"
+    chat_path: "/v1/chat/completions"
     api_key_env: "LLM_ROUTER_API_KEY"
     model: "gpt-4o-mini"
     timeout_seconds: 30
@@ -12,6 +13,7 @@ spark_runtime:
   backend: "kubernetes"
   kubernetes:
     kube_context: null
+    kubeconfig_path: null
 
 spark_history:
   backend: "http"
@@ -20,6 +22,20 @@ spark_history:
     timeout_seconds: 30
 
 tuning:
+  iterations: 2
+  llm_json_retries: 2
+  prompt: |
+    You are a Spark tuning assistant.
+    You must propose the next run parameters to minimize requested_gb_seconds,
+    reduce spill_gb, and avoid too many small files.
+    Treat requested_gb_seconds as the primary optimization target.
+    Use only the tunable parameters provided in the configuration payload.
+    Do not assume any fixed Spark parameter names beyond what is provided for this run.
+    Continue tuning and exploring alternative configurations instead of freezing the configuration too early.
+    Never return a parameter configuration that has already been run before.
+    Across the tuning campaign, try to gather information about all tunable parameters so that each parameter changes in at least one run when it is feasible to do so.
+    It is acceptable to make bold configuration changes when they help explore the search space and gather information about job behavior under different settings.
+    Return ONLY valid JSON that matches the schema exactly.
   params:
     spark.sql.shuffle.partitions:
       path:

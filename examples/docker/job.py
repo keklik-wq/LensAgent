@@ -7,7 +7,9 @@ from pyspark.sql import functions as F
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Local Spark job for Docker-based end-to-end testing.")
+    parser = argparse.ArgumentParser(
+        description="Local Spark job for Docker-based end-to-end testing."
+    )
     parser.add_argument("--rows", type=int, default=2000)
     return parser
 

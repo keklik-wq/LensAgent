@@ -21,18 +21,17 @@ class SparkRuntime(Protocol):
         manifest: dict[str, Any],
         namespace: str,
         driver_container: str | None = None,
-    ) -> SparkRunResult:
-        ...
+    ) -> SparkRunResult: ...
 
 
 class KubernetesSparkRuntime:
-    def __init__(self, kube_context: str | None) -> None:
+    def __init__(self, kube_context: str | None, kubeconfig_path: str | None = None) -> None:
         from kubernetes import client as k8s_client
         from kubernetes import config as k8s_config
 
         self._k8s_client = k8s_client
         try:
-            k8s_config.load_kube_config(context=kube_context)
+            k8s_config.load_kube_config(config_file=kubeconfig_path, context=kube_context)
         except Exception:
             k8s_config.load_incluster_config()
         self._core_api = k8s_client.CoreV1Api()
@@ -81,7 +80,14 @@ class KubernetesSparkRuntime:
     ) -> None:
         plural = "sparkapplications"
         try:
-            self._custom_api.get_namespaced_custom_object(group, version, namespace, plural, name)
+            existing = self._custom_api.get_namespaced_custom_object(
+                group, version, namespace, plural, name
+            )
+            metadata = existing.get("metadata", {})
+            resource_version = metadata.get("resourceVersion")
+            if resource_version:
+                manifest.setdefault("metadata", {})
+                manifest["metadata"]["resourceVersion"] = resource_version
             self._custom_api.replace_namespaced_custom_object(
                 group, version, namespace, plural, name, manifest
             )
@@ -132,6 +138,7 @@ class KubernetesSparkRuntime:
 
     def _app_id_from_status(self, obj: dict[str, Any]) -> str:
         status = obj.get("status", {})
+        
         for key in ("sparkApplicationId", "appId", "applicationId"):
             value = status.get(key)
             if value:
@@ -216,7 +223,9 @@ class SparkSubmitRuntime:
 
         app_file = str(spec.get("mainApplicationFile", ""))
         if not app_file:
-            raise SystemExit("Manifest spec.mainApplicationFile is required for spark_submit runtime.")
+            raise SystemExit(
+                "Manifest spec.mainApplicationFile is required for spark_submit runtime."
+            )
         command.append(_normalize_app_path(app_file))
         for arg in spec.get("arguments", []) or []:
             command.append(str(arg))

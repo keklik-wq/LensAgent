@@ -10,6 +10,7 @@ import yaml
 @dataclass(frozen=True)
 class RouterLlmConfig:
     base_url: str
+    chat_path: str
     api_key_env: str
     model: str
     timeout_seconds: int
@@ -22,15 +23,26 @@ class LocalLlmConfig:
 
 
 @dataclass(frozen=True)
+class OllamaLlmConfig:
+    base_url: str
+    model: str
+    timeout_seconds: int
+    keep_alive: str | None
+    options: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class LlmConfig:
     backend: str
     router: RouterLlmConfig | None
     local: LocalLlmConfig | None
+    ollama: OllamaLlmConfig | None
 
 
 @dataclass(frozen=True)
 class KubernetesRuntimeConfig:
     kube_context: str | None
+    kubeconfig_path: str | None
 
 
 @dataclass(frozen=True)
@@ -91,6 +103,9 @@ class TuningParamConfig:
 
 @dataclass(frozen=True)
 class TuningConfig:
+    iterations: int
+    prompt: str
+    llm_json_retries: int
     params: dict[str, TuningParamConfig]
     total_memory_gb_max: int | None
 
@@ -103,7 +118,7 @@ class AppConfig:
     tuning: TuningConfig
 
     @staticmethod
-    def load(path: str | Path) -> "AppConfig":
+    def load(path: str | Path) -> AppConfig:
         raw = yaml.safe_load(Path(path).read_text())
         if not isinstance(raw, dict):
             raise SystemExit(f"Config at {path} is empty or invalid YAML.")
@@ -131,6 +146,7 @@ def _normalize_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
             "backend": "kubernetes",
             "kubernetes": {
                 "kube_context": None,
+                "kubeconfig_path": None,
             },
         }
     if "spark_history" not in data:
@@ -146,6 +162,7 @@ def _coerce_llm(raw: Any) -> LlmConfig:
     backend = str(raw.get("backend", "router"))
     router = raw.get("router")
     local = raw.get("local")
+    ollama = raw.get("ollama")
     if backend == "router":
         if not isinstance(router, dict):
             raise SystemExit("llm.backend=router requires llm.router.")
@@ -153,12 +170,23 @@ def _coerce_llm(raw: Any) -> LlmConfig:
             backend=backend,
             router=_coerce_router_llm(router),
             local=None,
+            ollama=None,
         )
     if backend == "local":
         return LlmConfig(
             backend=backend,
             router=None,
             local=_coerce_local_llm(local or {}),
+            ollama=None,
+        )
+    if backend == "ollama":
+        if not isinstance(ollama, dict):
+            raise SystemExit("llm.backend=ollama requires llm.ollama.")
+        return LlmConfig(
+            backend=backend,
+            router=None,
+            local=None,
+            ollama=_coerce_ollama_llm(ollama),
         )
     raise SystemExit(f"Unsupported llm backend: {backend}")
 
@@ -166,6 +194,7 @@ def _coerce_llm(raw: Any) -> LlmConfig:
 def _coerce_router_llm(raw: dict[str, Any]) -> RouterLlmConfig:
     return RouterLlmConfig(
         base_url=str(raw["base_url"]),
+        chat_path=str(raw.get("chat_path", "/v1/chat/completions")),
         api_key_env=str(raw["api_key_env"]),
         model=str(raw["model"]),
         timeout_seconds=int(raw.get("timeout_seconds", 30)),
@@ -179,6 +208,22 @@ def _coerce_local_llm(raw: dict[str, Any]) -> LocalLlmConfig:
     )
 
 
+def _coerce_ollama_llm(raw: dict[str, Any]) -> OllamaLlmConfig:
+    model = raw.get("model")
+    if not model:
+        raise SystemExit("llm.ollama.model is required.")
+    options = raw.get("options") or {}
+    if not isinstance(options, dict):
+        raise SystemExit("llm.ollama.options must be a mapping when provided.")
+    return OllamaLlmConfig(
+        base_url=str(raw.get("base_url", "http://127.0.0.1:11434")),
+        model=str(model),
+        timeout_seconds=int(raw.get("timeout_seconds", 60)),
+        keep_alive=_coerce_optional_str(raw.get("keep_alive")),
+        options=dict(options),
+    )
+
+
 def _coerce_spark_runtime(raw: Any) -> SparkRuntimeConfig:
     if not isinstance(raw, dict):
         raise SystemExit("Config section spark_runtime must be a mapping.")
@@ -187,7 +232,12 @@ def _coerce_spark_runtime(raw: Any) -> SparkRuntimeConfig:
         return SparkRuntimeConfig(
             backend=backend,
             kubernetes=KubernetesRuntimeConfig(
-                kube_context=_coerce_optional_str((raw.get("kubernetes") or {}).get("kube_context")),
+                kube_context=_coerce_optional_str(
+                    (raw.get("kubernetes") or {}).get("kube_context")
+                ),
+                kubeconfig_path=_coerce_optional_str(
+                    (raw.get("kubernetes") or {}).get("kubeconfig_path")
+                ),
             ),
             spark_submit=None,
             local=None,
@@ -293,6 +343,9 @@ def _coerce_tuning(raw: Any) -> TuningConfig:
     constraints = raw.get("constraints") or {}
     total_memory = (constraints.get("total_memory_gb") or {}).get("max")
     return TuningConfig(
+        iterations=int(raw.get("iterations", 2)),
+        prompt=str(raw.get("prompt", _default_tuning_prompt())),
+        llm_json_retries=int(raw.get("llm_json_retries", 2)),
         params=params,
         total_memory_gb_max=int(total_memory) if total_memory is not None else None,
     )
@@ -300,6 +353,8 @@ def _coerce_tuning(raw: Any) -> TuningConfig:
 
 def _default_tuning() -> dict[str, Any]:
     return {
+        "prompt": _default_tuning_prompt(),
+        "llm_json_retries": 2,
         "params": {
             "spark.sql.shuffle.partitions": {
                 "path": "spec.sparkConf.spark.sql.shuffle.partitions",
@@ -330,6 +385,22 @@ def _default_tuning() -> dict[str, Any]:
             "total_memory_gb": {"max": 500},
         },
     }
+
+
+def _default_tuning_prompt() -> str:
+    return (
+        "You are a Spark tuning assistant. "
+        "You must propose the next run parameters to minimize requested_gb_seconds, "
+        "reduce spill_gb, and avoid too many small files. "
+        "Use only the tunable parameters provided in the configuration payload. "
+        "Do not assume any fixed Spark parameter names beyond what is provided for this run. "
+        "Treat requested_gb_seconds as the primary optimization target. "
+        "Continue tuning and exploring alternative configurations instead of freezing the configuration too early. "
+        "Never return a parameter configuration that has already been run before. "
+        "Across the tuning campaign, try to gather information about all tunable parameters so that each parameter changes in at least one run when it is feasible to do so. "
+        "It is acceptable to make bold configuration changes when they help explore the search space and gather information about job behavior under different settings. "
+        "Return ONLY valid JSON that matches the schema exactly."
+    )
 
 
 def _coerce_local_history(raw: dict[str, Any]) -> LocalHistoryConfig:

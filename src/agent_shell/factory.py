@@ -4,6 +4,7 @@ from .clients import LlmClient, LocalLlmClient
 from .config import AppConfig
 from .history import HttpSparkHistoryProvider, LocalSparkHistoryProvider, SparkHistoryProvider
 from .llm_router import LlmRouterClient
+from .ollama import OllamaLlmClient
 from .runtime import KubernetesSparkRuntime, LocalSparkRuntime, SparkRuntime, SparkSubmitRuntime
 
 
@@ -13,6 +14,7 @@ def build_llm_client(config: AppConfig) -> LlmClient:
             raise SystemExit("llm.router config is required for router backend.")
         return LlmRouterClient(
             base_url=config.llm.router.base_url,
+            chat_path=config.llm.router.chat_path,
             api_key_env=config.llm.router.api_key_env,
             model=config.llm.router.model,
             timeout_seconds=config.llm.router.timeout_seconds,
@@ -22,6 +24,16 @@ def build_llm_client(config: AppConfig) -> LlmClient:
         if config.llm.local is None:
             raise SystemExit("llm.local config is required for local backend.")
         return LocalLlmClient(strategy=config.llm.local.strategy)
+    if config.llm.backend == "ollama":
+        if config.llm.ollama is None:
+            raise SystemExit("llm.ollama config is required for ollama backend.")
+        return OllamaLlmClient(
+            base_url=config.llm.ollama.base_url,
+            model=config.llm.ollama.model,
+            timeout_seconds=config.llm.ollama.timeout_seconds,
+            keep_alive=config.llm.ollama.keep_alive,
+            options=config.llm.ollama.options,
+        )
     raise SystemExit(f"Unsupported llm backend: {config.llm.backend}")
 
 
@@ -30,7 +42,10 @@ def build_spark_runtime(config: AppConfig, kube_context: str | None = None) -> S
         runtime_cfg = config.spark_runtime.kubernetes
         if runtime_cfg is None:
             raise SystemExit("spark_runtime.kubernetes config is required.")
-        return KubernetesSparkRuntime(kube_context=kube_context or runtime_cfg.kube_context)
+        return KubernetesSparkRuntime(
+            kube_context=kube_context or runtime_cfg.kube_context,
+            kubeconfig_path=runtime_cfg.kubeconfig_path,
+        )
     if config.spark_runtime.backend == "spark_submit":
         runtime_cfg = config.spark_runtime.spark_submit
         if runtime_cfg is None:

@@ -12,8 +12,7 @@ class LlmResponse:
 
 
 class LlmClient(Protocol):
-    def chat(self, system: str, user: str, temperature: float = 0.2) -> LlmResponse:
-        ...
+    def chat(self, system: str, user: str, temperature: float = 0.2) -> LlmResponse: ...
 
 
 class LocalLlmClient:
