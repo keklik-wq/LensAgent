@@ -165,6 +165,10 @@ def _build_base_params(
     return base_params
 
 
+def _is_spark_conf_path(path: list[str]) -> bool:
+    return len(path) >= 2 and path[0] == "spec" and path[1] == "sparkConf"
+
+
 def _apply_params_to_manifest(
     manifest: dict[str, Any],
     params: dict[str, Any],
@@ -175,6 +179,8 @@ def _apply_params_to_manifest(
         if name not in params:
             continue
         formatted = _format_param_value(params[name], spec.type)
+        if _is_spark_conf_path(spec.path):
+            formatted = str(formatted)
         _set_by_path(data, spec.path, formatted)
     return data
 

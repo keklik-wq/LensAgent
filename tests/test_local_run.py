@@ -219,3 +219,37 @@ def test_request_tuning_candidate_retries_invalid_json() -> None:
     retry_payload = json.loads(llm.calls[1][1])
     assert retry_payload["retry_feedback"]["attempt"] == 2
     assert "invalid_response_excerpt" in retry_payload["retry_feedback"]
+
+
+def test_apply_params_to_manifest_serializes_spark_conf_values_as_strings() -> None:
+    manifest = {
+        "spec": {
+            "sparkConf": {"spark.sql.shuffle.partitions": "4000"},
+            "executor": {"cores": 4},
+        }
+    }
+    tuning_params = {
+        "spark.sql.shuffle.partitions": main.TuningParamConfig(
+            path=["spec", "sparkConf", "spark.sql.shuffle.partitions"],
+            type="int",
+            min=1,
+            max=10000,
+            default=None,
+        ),
+        "executor.cores": main.TuningParamConfig(
+            path=["spec", "executor", "cores"],
+            type="int",
+            min=1,
+            max=16,
+            default=None,
+        ),
+    }
+
+    updated = main._apply_params_to_manifest(
+        manifest=manifest,
+        params={"spark.sql.shuffle.partitions": 2500, "executor.cores": 6},
+        tuning_params=tuning_params,
+    )
+
+    assert updated["spec"]["sparkConf"]["spark.sql.shuffle.partitions"] == "2500"
+    assert updated["spec"]["executor"]["cores"] == 6

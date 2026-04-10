@@ -80,7 +80,14 @@ class KubernetesSparkRuntime:
     ) -> None:
         plural = "sparkapplications"
         try:
-            self._custom_api.get_namespaced_custom_object(group, version, namespace, plural, name)
+            existing = self._custom_api.get_namespaced_custom_object(
+                group, version, namespace, plural, name
+            )
+            metadata = existing.get("metadata", {})
+            resource_version = metadata.get("resourceVersion")
+            if resource_version:
+                manifest.setdefault("metadata", {})
+                manifest["metadata"]["resourceVersion"] = resource_version
             self._custom_api.replace_namespaced_custom_object(
                 group, version, namespace, plural, name, manifest
             )
