@@ -11,6 +11,7 @@ def test_loads_legacy_router_config(tmp_path: Path) -> None:
         """
 llm_router:
   base_url: "http://router"
+  chat_path: "/v1/chat/completions"
   api_key_env: "KEY"
   model: "m1"
   timeout_seconds: 10
@@ -30,6 +31,7 @@ spark_history:
     assert cfg.llm.backend == "router"
     assert cfg.llm.router is not None
     assert cfg.llm.router.model == "m1"
+    assert cfg.llm.router.chat_path == "/v1/chat/completions"
     assert cfg.spark_runtime.backend == "kubernetes"
     assert cfg.spark_runtime.kubernetes is not None
     assert cfg.spark_runtime.kubernetes.kubeconfig_path is None
@@ -81,6 +83,34 @@ tuning:
     assert cfg.tuning.iterations == 4
     assert cfg.tuning.prompt == "Custom prompt from yaml."
     assert cfg.tuning.llm_json_retries == 5
+
+
+def test_router_chat_path_defaults_when_omitted(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+llm:
+  backend: "router"
+  router:
+    base_url: "http://router"
+    api_key_env: "KEY"
+    model: "m1"
+    timeout_seconds: 10
+    allow_models: ["m1"]
+spark_history:
+  backend: "local"
+  local:
+    fixtures_path: "examples/local/history"
+    base_url: "http://history"
+    default_app_id: "local-app-001"
+""",
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig.load(config_path)
+
+    assert cfg.llm.router is not None
+    assert cfg.llm.router.chat_path == "/v1/chat/completions"
 
 
 def test_loads_ollama_config_and_builds_client(tmp_path: Path) -> None:

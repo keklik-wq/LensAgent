@@ -2,6 +2,7 @@ llm:
   backend: "router"
   router:
     base_url: "https://llm-router.internal"
+    chat_path: "/v1/chat/completions"
     api_key_env: "LLM_ROUTER_API_KEY"
     model: "gpt-4o-mini"
     timeout_seconds: 30

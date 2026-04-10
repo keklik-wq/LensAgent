@@ -138,6 +138,7 @@ class KubernetesSparkRuntime:
 
     def _app_id_from_status(self, obj: dict[str, Any]) -> str:
         status = obj.get("status", {})
+        
         for key in ("sparkApplicationId", "appId", "applicationId"):
             value = status.get(key)
             if value:

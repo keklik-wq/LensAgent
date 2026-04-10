@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import re
+import secrets
 import shutil
 import time
 from datetime import datetime
@@ -185,11 +186,16 @@ def _apply_params_to_manifest(
     return data
 
 
-def _update_manifest_name(manifest: dict[str, Any], run_id: str) -> dict[str, Any]:
+def _update_manifest_name(
+    manifest: dict[str, Any],
+    run_id: str,
+    campaign_id: str | None = None,
+) -> dict[str, Any]:
     data = _deep_copy(manifest)
     data.setdefault("metadata", {})
     base_name = data["metadata"].get("name", "spark-app")
-    data["metadata"]["name"] = f"{base_name}-r{run_id}"
+    suffix = f"-{campaign_id}" if campaign_id else ""
+    data["metadata"]["name"] = f"{base_name}{suffix}-r{run_id}"
     return data
 
 
@@ -414,6 +420,10 @@ def _build_run_id(index: int) -> str:
     return f"{index:03d}"
 
 
+def _build_campaign_id() -> str:
+    return secrets.token_hex(2)
+
+
 def _ensure_dirs() -> None:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -486,25 +496,19 @@ def _load_stages_with_retry(
 ) -> tuple[str, list[dict[str, Any]]]:
     deadline = time.time() + timeout_seconds
     last_error: Exception | None = None
-    candidate_app_id = app_id
     while time.time() < deadline:
         try:
-            stages = history_provider.get_stages(candidate_app_id)
+            stages = history_provider.get_stages(app_id)
         except Exception as exc:
             last_error = exc
-            latest_app_id = history_provider.latest_app_id()
-            if latest_app_id and latest_app_id != candidate_app_id:
-                candidate_app_id = latest_app_id
             time.sleep(poll_seconds)
             continue
         if stages:
-            return candidate_app_id, stages
+            return app_id, stages
         time.sleep(poll_seconds)
     if last_error is not None:
-        raise RuntimeError(
-            f"Failed to load stages for {candidate_app_id}: {last_error}"
-        ) from last_error
-    raise RuntimeError(f"Timed out waiting for stages for {candidate_app_id}")
+        raise RuntimeError(f"Failed to load stages for {app_id}: {last_error}") from last_error
+    raise RuntimeError(f"Timed out waiting for stages for {app_id}")
 
 
 def _generate_random_params(
@@ -596,7 +600,7 @@ def run_loop(args: argparse.Namespace) -> None:
     runtime = build_spark_runtime(app_config, kube_context=args.kube_context)
     history_provider = build_spark_history_provider(app_config, base_url_override=args.history_url)
     llm = build_llm_client(app_config)
-    logger.info("Starting run loop (iterations=%s, namespace=%s)", args.iterations, namespace)
+
     iterations = args.iterations if args.iterations is not None else app_config.tuning.iterations
     logger.info("Starting run loop (iterations=%s, namespace=%s)", iterations, namespace)
 
@@ -611,6 +615,7 @@ def run_loop(args: argparse.Namespace) -> None:
     tunable_param_specs = _build_tunable_param_specs(tuning_params)
 
     transform_hash = _hash_file(transform_path)
+    campaign_id = _build_campaign_id()
     history: list[dict[str, Any]] = []
     base_params = _build_base_params(base_manifest, tuning_params)
 
@@ -673,7 +678,7 @@ def run_loop(args: argparse.Namespace) -> None:
                 max_total_memory_gb,
             )
 
-        manifest = _update_manifest_name(base_manifest, run_id=run_id)
+        manifest = _update_manifest_name(base_manifest, run_id=run_id, campaign_id=campaign_id)
         manifest = _apply_params_to_manifest(manifest, chosen, tuning_params)
         if "executor.cores" in chosen:
             _set_by_path(

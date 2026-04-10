@@ -62,6 +62,7 @@ llm:
   backend: "router"
   router:
     base_url: "https://llm-router.internal"
+    chat_path: "/v1/chat/completions"
     api_key_env: "LLM_ROUTER_API_KEY"
     model: "gpt-4o-mini"
     timeout_seconds: 30
@@ -117,6 +118,8 @@ How it works in Kubernetes mode:
 - the loop waits for completion, fetches stage data from Spark History Server, and feeds the summarized history back into the LLM for the next iteration
 
 Notes:
+- `llm.router.base_url` is the router host/root URL
+- `llm.router.chat_path` is the relative API path used for chat requests
 - `kube_context` is the name of a context inside the kubeconfig, not a file path
 - `kubeconfig_path` is an optional explicit path to the kubeconfig file
 - if `kubeconfig_path` is omitted, the Kubernetes Python client uses the default kubeconfig location

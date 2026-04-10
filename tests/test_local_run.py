@@ -3,6 +3,8 @@ from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import main
 
 
@@ -221,6 +223,14 @@ def test_request_tuning_candidate_retries_invalid_json() -> None:
     assert "invalid_response_excerpt" in retry_payload["retry_feedback"]
 
 
+def test_update_manifest_name_includes_campaign_id() -> None:
+    manifest = {"metadata": {"name": "spark-app"}}
+
+    updated = main._update_manifest_name(manifest, run_id="001", campaign_id="abcd")
+
+    assert updated["metadata"]["name"] == "spark-app-abcd-r001"
+
+
 def test_apply_params_to_manifest_serializes_spark_conf_values_as_strings() -> None:
     manifest = {
         "spec": {
@@ -253,3 +263,26 @@ def test_apply_params_to_manifest_serializes_spark_conf_values_as_strings() -> N
 
     assert updated["spec"]["sparkConf"]["spark.sql.shuffle.partitions"] == "2500"
     assert updated["spec"]["executor"]["cores"] == 6
+
+
+def test_load_stages_with_retry_does_not_switch_to_latest_app_id() -> None:
+    calls: list[str] = []
+
+    class FakeHistoryProvider:
+        def get_stages(self, app_id: str) -> list[dict[str, object]]:
+            calls.append(app_id)
+            raise RuntimeError("missing")
+
+        def latest_app_id(self) -> str | None:
+            return "spark-other"
+
+    with pytest.raises(RuntimeError, match="spark-original"):
+        main._load_stages_with_retry(
+            app_id="spark-original",
+            history_provider=FakeHistoryProvider(),
+            poll_seconds=0,
+            timeout_seconds=0.01,
+        )
+
+    assert calls
+    assert all(app_id == "spark-original" for app_id in calls)

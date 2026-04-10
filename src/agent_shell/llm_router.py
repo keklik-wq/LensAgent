@@ -10,6 +10,7 @@ class LlmRouterClient:
     def __init__(
         self,
         base_url: str,
+        chat_path: str,
         api_key_env: str,
         model: str,
         timeout_seconds: int,
@@ -18,6 +19,7 @@ class LlmRouterClient:
         if model not in allow_models:
             raise ValueError(f"Model '{model}' is not in allowlist")
         self._client = HttpClient(base_url, timeout_seconds)
+        self._chat_path = chat_path
         self._api_key = os.getenv(api_key_env, "")
         self._model = model
 
@@ -33,6 +35,6 @@ class LlmRouterClient:
         headers = {}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
-        raw = self._client.post_json("/v1/chat/completions", payload, headers=headers)
+        raw = self._client.post_json(self._chat_path, payload, headers=headers)
         content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
         return LlmResponse(content=content, raw=raw)

@@ -10,6 +10,7 @@ import yaml
 @dataclass(frozen=True)
 class RouterLlmConfig:
     base_url: str
+    chat_path: str
     api_key_env: str
     model: str
     timeout_seconds: int
@@ -193,6 +194,7 @@ def _coerce_llm(raw: Any) -> LlmConfig:
 def _coerce_router_llm(raw: dict[str, Any]) -> RouterLlmConfig:
     return RouterLlmConfig(
         base_url=str(raw["base_url"]),
+        chat_path=str(raw.get("chat_path", "/v1/chat/completions")),
         api_key_env=str(raw["api_key_env"]),
         model=str(raw["model"]),
         timeout_seconds=int(raw.get("timeout_seconds", 30)),

@@ -14,6 +14,7 @@ def build_llm_client(config: AppConfig) -> LlmClient:
             raise SystemExit("llm.router config is required for router backend.")
         return LlmRouterClient(
             base_url=config.llm.router.base_url,
+            chat_path=config.llm.router.chat_path,
             api_key_env=config.llm.router.api_key_env,
             model=config.llm.router.model,
             timeout_seconds=config.llm.router.timeout_seconds,
