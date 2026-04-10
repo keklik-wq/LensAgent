@@ -81,10 +81,26 @@ class SparkHistoryConfig:
 
 
 @dataclass(frozen=True)
+class TuningParamConfig:
+    path: list[str]
+    type: str
+    min: float | int | None
+    max: float | int | None
+    default: object | None
+
+
+@dataclass(frozen=True)
+class TuningConfig:
+    params: dict[str, TuningParamConfig]
+    total_memory_gb_max: int | None
+
+
+@dataclass(frozen=True)
 class AppConfig:
     llm: LlmConfig
     spark_runtime: SparkRuntimeConfig
     spark_history: SparkHistoryConfig
+    tuning: TuningConfig
 
     @staticmethod
     def load(path: str | Path) -> "AppConfig":
@@ -96,6 +112,7 @@ class AppConfig:
             llm=_coerce_llm(normalized.get("llm")),
             spark_runtime=_coerce_spark_runtime(normalized.get("spark_runtime")),
             spark_history=_coerce_spark_history(normalized.get("spark_history")),
+            tuning=_coerce_tuning(normalized.get("tuning")),
         )
 
 
@@ -118,6 +135,8 @@ def _normalize_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
         }
     if "spark_history" not in data:
         raise SystemExit("Config is missing required section: spark_history")
+    if "tuning" not in data:
+        data["tuning"] = _default_tuning()
     return data
 
 
@@ -242,6 +261,75 @@ def _coerce_spark_history(raw: Any) -> SparkHistoryConfig:
             timeout_seconds=int(raw.get("timeout_seconds", 5)),
         )
     raise SystemExit(f"Unsupported spark_history backend: {backend}")
+
+
+def _coerce_tuning(raw: Any) -> TuningConfig:
+    if raw is None:
+        raw = _default_tuning()
+    if not isinstance(raw, dict):
+        raise SystemExit("Config section tuning must be a mapping.")
+    params_raw = raw.get("params")
+    if not isinstance(params_raw, dict) or not params_raw:
+        raise SystemExit("tuning.params must be a non-empty mapping.")
+    params: dict[str, TuningParamConfig] = {}
+    for name, spec in params_raw.items():
+        if not isinstance(spec, dict):
+            raise SystemExit(f"tuning.params.{name} must be a mapping.")
+        path_value = spec.get("path")
+        if not path_value:
+            raise SystemExit(f"tuning.params.{name} requires path.")
+        if isinstance(path_value, list):
+            path = [str(part) for part in path_value]
+        else:
+            path = [part for part in str(path_value).split(".") if part]
+        param_type = str(spec.get("type", "int"))
+        params[str(name)] = TuningParamConfig(
+            path=path,
+            type=param_type,
+            min=spec.get("min"),
+            max=spec.get("max"),
+            default=spec.get("default"),
+        )
+    constraints = raw.get("constraints") or {}
+    total_memory = (constraints.get("total_memory_gb") or {}).get("max")
+    return TuningConfig(
+        params=params,
+        total_memory_gb_max=int(total_memory) if total_memory is not None else None,
+    )
+
+
+def _default_tuning() -> dict[str, Any]:
+    return {
+        "params": {
+            "spark.sql.shuffle.partitions": {
+                "path": "spec.sparkConf.spark.sql.shuffle.partitions",
+                "type": "int",
+                "min": 200,
+                "max": 10000,
+            },
+            "executor.cores": {
+                "path": "spec.executor.cores",
+                "type": "int",
+                "min": 1,
+                "max": 16,
+            },
+            "executor.instances": {
+                "path": "spec.executor.instances",
+                "type": "int",
+                "min": 1,
+                "max": 500,
+            },
+            "executor.memory_gb": {
+                "path": "spec.executor.memory",
+                "type": "memory_gb",
+                "min": 1,
+                "max": 256,
+            },
+        },
+        "constraints": {
+            "total_memory_gb": {"max": 500},
+        },
+    }
 
 
 def _coerce_local_history(raw: dict[str, Any]) -> LocalHistoryConfig:
