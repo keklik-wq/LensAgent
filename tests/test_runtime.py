@@ -69,6 +69,28 @@ class _FakeCustomObjectsApi:
         )
 
 
+class _FakeCoreApi:
+    def __init__(self, pod_name: str = "demo-driver", logs: str = "") -> None:
+        self._pod_name = pod_name
+        self._logs = logs
+
+    def list_namespaced_pod(self, namespace: str, label_selector: str | None = None):
+        del namespace, label_selector
+        metadata = type("FakeMetadata", (), {"name": self._pod_name})()
+        item = type("FakePod", (), {"metadata": metadata})()
+        return type("FakePodList", (), {"items": [item]})()
+
+    def read_namespaced_pod_log(
+        self,
+        name: str,
+        namespace: str,
+        container: str | None = None,
+        tail_lines: int | None = None,
+    ) -> str:
+        del name, namespace, container, tail_lines
+        return self._logs
+
+
 def test_apply_replace_uses_existing_resource_version() -> None:
     runtime = object.__new__(KubernetesSparkRuntime)
     runtime._custom_api = _FakeCustomObjectsApi(existing={"metadata": {"resourceVersion": "12345"}})
@@ -128,3 +150,38 @@ def test_delete_application_deletes_custom_object() -> None:
             "name": "demo",
         }
     ]
+
+
+def test_run_application_reads_driver_logs_and_error_message_for_failed_status() -> None:
+    runtime = object.__new__(KubernetesSparkRuntime)
+    runtime._custom_api = _FakeCustomObjectsApi(existing=None)
+    runtime._core_api = _FakeCoreApi(logs="java.lang.OutOfMemoryError: Java heap space")
+    runtime._k8s_client = type(
+        "FakeK8sClient",
+        (),
+        {"exceptions": type("FakeExceptions", (), {"ApiException": _FakeApiException})},
+    )()
+    runtime._apply = lambda group, version, namespace, name, manifest: None  # type: ignore[method-assign]
+    runtime._wait_for_completion = lambda group, version, namespace, name: {  # type: ignore[method-assign]
+        "status": {
+            "sparkApplicationId": "spark-abc123abc123abc123abc123abc123ab",
+            "applicationState": {
+                "state": "FAILED",
+                "errorMessage": "driver container failed with ExitCode: 1",
+            },
+        }
+    }
+
+    result = runtime.run_application(
+        {
+            "apiVersion": "sparkoperator.k8s.io/v1beta2",
+            "kind": "SparkApplication",
+            "metadata": {"name": "demo"},
+        },
+        "spark",
+    )
+
+    assert result.app_id == "spark-abc123abc123abc123abc123abc123ab"
+    assert result.final_state == "FAILED"
+    assert "OutOfMemoryError" in result.driver_logs
+    assert "ExitCode: 1" in result.error_message

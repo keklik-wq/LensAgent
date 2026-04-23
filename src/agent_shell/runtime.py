@@ -13,6 +13,7 @@ class SparkRunResult:
     app_id: str
     final_state: str
     driver_logs: str
+    error_message: str
 
 
 class SparkRuntime(Protocol):
@@ -49,20 +50,16 @@ class KubernetesSparkRuntime:
         self._apply(group, version, namespace, name, manifest)
         status_obj = self._wait_for_completion(group, version, namespace, name)
         app_id = self._app_id_from_status(status_obj)
-        logs = ""
-        if not app_id:
-            driver_pod = self._find_driver_pod(namespace, name)
-            logs = self._core_api.read_namespaced_pod_log(
-                driver_pod,
-                namespace,
-                container=driver_container,
-                tail_lines=2000,
-            )
+        logs = self._read_driver_logs(namespace, name, driver_container)
+        if not app_id and logs:
             app_id = self._extract_app_id(logs)
         return SparkRunResult(
             app_id=app_id,
             final_state=status_obj.get("status", {}).get("applicationState", {}).get("state", ""),
             driver_logs=logs,
+            error_message=str(
+                status_obj.get("status", {}).get("applicationState", {}).get("errorMessage", "")
+            ),
         )
 
     def delete_application(self, manifest: dict[str, Any], namespace: str) -> None:
@@ -156,6 +153,28 @@ class KubernetesSparkRuntime:
                 return name
         raise SystemExit(f"Driver pod not found for app {app_name}")
 
+    def _read_driver_logs(
+        self,
+        namespace: str,
+        app_name: str,
+        driver_container: str | None,
+    ) -> str:
+        try:
+            driver_pod = self._find_driver_pod(namespace, app_name)
+        except Exception:
+            return ""
+        try:
+            return str(
+                self._core_api.read_namespaced_pod_log(
+                    driver_pod,
+                    namespace,
+                    container=driver_container,
+                    tail_lines=2000,
+                )
+            )
+        except Exception:
+            return ""
+
     def _app_id_from_status(self, obj: dict[str, Any]) -> str:
         status = obj.get("status", {})
         
@@ -210,6 +229,7 @@ class SparkSubmitRuntime:
             app_id=app_id,
             final_state="COMPLETED",
             driver_logs=logs,
+            error_message="",
         )
 
     def delete_application(self, manifest: dict[str, Any], namespace: str) -> None:
@@ -304,6 +324,7 @@ class LocalSparkRuntime:
             app_id=app_id,
             final_state=self._final_state,
             driver_logs=logs,
+            error_message="",
         )
 
     def delete_application(self, manifest: dict[str, Any], namespace: str) -> None:

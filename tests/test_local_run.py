@@ -56,6 +56,8 @@ def test_build_llm_history_entry_excludes_driver_logs() -> None:
             "small_files": None,
             "spark_ui": "http://spark-ui",
             "history_api": "http://history-api",
+            "failure_reason": "driver failed",
+            "driver_error_excerpt": "oom tail",
             "driver_logs": "very large logs",
             "driver_logs_path": "output/runs/run_001/driver.log",
             "manifest_path": "output/runs/run_001/manifest_001.yaml",
@@ -64,6 +66,8 @@ def test_build_llm_history_entry_excludes_driver_logs() -> None:
 
     assert entry["run_id"] == "001"
     assert entry["params"] == {"executor.instances": 2}
+    assert entry["failure_reason"] == "driver failed"
+    assert entry["driver_error_excerpt"] == "oom tail"
     assert "driver_logs" not in entry
     assert "driver_logs_path" not in entry
     assert "manifest_path" not in entry
