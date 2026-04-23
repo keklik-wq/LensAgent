@@ -120,8 +120,10 @@ def _coerce_param_value(value: Any, param_type: str) -> Any:
 
 
 def _constraint_value_kind(spec: TuningParamConfig, value: Any = None) -> str | None:
-    if spec.type in {"int", "memory_gb"}:
+    if spec.type == "int":
         return "int"
+    if spec.type == "memory_gb":
+        return "memory_gb"
     if spec.type == "float":
         return "float"
     if spec.type != "str":
@@ -153,6 +155,13 @@ def _coerce_constraint_value(value: Any, spec: TuningParamConfig, *, field_name:
                 f"{field_name} for tuning param expects a numeric value, got {value!r}."
             )
         return float(str(value).strip())
+    if kind == "memory_gb":
+        try:
+            return _coerce_param_value(value, spec.type)
+        except ValueError as exc:
+            raise ValueError(
+                f"{field_name} for tuning param expects a memory value like '4g', got {value!r}."
+            ) from exc
     return _coerce_param_value(value, spec.type)
 
 

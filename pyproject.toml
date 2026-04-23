@@ -36,3 +36,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+markers = [
+  "integration: tests that exercise Docker Compose and external services",
+]

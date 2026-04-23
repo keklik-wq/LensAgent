@@ -24,4 +24,5 @@ Thumbs.db
 
 # Project outputs
 output/
+output.backup*
 *.log
