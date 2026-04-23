@@ -689,24 +689,25 @@ def _request_tuning_candidate(
 
 def run_loop(args: argparse.Namespace) -> None:
     logger = logging.getLogger("lens-agent")
-    manifest_path = Path(args.manifest)
-    transform_path = Path(args.transform)
     config_path = Path(args.config)
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
-    if not transform_path.exists():
-        raise FileNotFoundError(f"Transform not found: {transform_path}")
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
 
     load_dotenv()
     app_config = AppConfig.load(config_path)
+    manifest_path = (app_config.config_dir / app_config.run.manifest).resolve()
+    transform_path = (app_config.config_dir / app_config.run.transform).resolve()
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
+    if not transform_path.exists():
+        raise FileNotFoundError(f"Transform not found: {transform_path}")
     logger.info(
-        "Loaded config from %s (runtime=%s, history=%s, llm=%s)",
+        "Loaded config from %s (runtime=%s, history=%s, llm=%s, first_run_mode=%s)",
         config_path,
         app_config.spark_runtime.backend,
         app_config.spark_history.backend,
         app_config.llm.backend,
+        app_config.run.first_run_mode,
     )
 
     base_manifest = _read_yaml(manifest_path)
@@ -749,7 +750,7 @@ def run_loop(args: argparse.Namespace) -> None:
         run_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Run %s: preparing manifest and inputs", run_id)
 
-        if iteration == 1 and args.use_base_for_first:
+        if iteration == 1 and app_config.run.first_run_mode == "base":
             chosen = _apply_constraints(
                 {},
                 base_params,
@@ -758,7 +759,7 @@ def run_loop(args: argparse.Namespace) -> None:
                 max_total_memory_gb,
             )
             rationale = "Base config for first run."
-        elif iteration == 1 and args.use_random_for_first:
+        elif iteration == 1 and app_config.run.first_run_mode == "random":
             candidate = _generate_random_params(base_params, tuning_params, 1)[0]
             chosen = _apply_constraints(
                 candidate,
@@ -947,8 +948,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Spark tuning loop with replaceable infrastructure backends."
     )
-    parser.add_argument("--manifest", required=True, help="Path to SparkApplication YAML.")
-    parser.add_argument("--transform", required=True, help="Path to transformation code file.")
     parser.add_argument("--config", required=True, help="Path to config.yaml.")
     parser.add_argument("--history-url", default=None, help="History base URL override.")
     parser.add_argument(
@@ -962,16 +961,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Max total requested memory (driver + executors). Overrides config when set.",
-    )
-    parser.add_argument(
-        "--use-base-for-first",
-        action="store_true",
-        help="Use base manifest params for first run before tuning.",
-    )
-    parser.add_argument(
-        "--use-random-for-first",
-        action="store_true",
-        help="Generate a randomized valid config for the first run.",
     )
     parser.add_argument(
         "--driver-container",
@@ -994,8 +983,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    if args.use_base_for_first and args.use_random_for_first:
-        raise ValueError("Choose only one of --use-base-for-first or --use-random-for-first.")
     _ensure_dirs()
     logger = _setup_logging()
     try:

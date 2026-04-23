@@ -1,3 +1,8 @@
+run:
+  manifest: "examples/docker/sparkapp.yaml"
+  transform: "examples/docker/job.py"
+  first_run_mode: "base"
+
 llm:
   backend: "router"
   router:

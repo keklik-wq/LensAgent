@@ -1,3 +1,8 @@
+run:
+  manifest: "sparkapp.yaml"
+  transform: "job.py"
+  first_run_mode: "base"
+
 llm:
   backend: "local"
   local:

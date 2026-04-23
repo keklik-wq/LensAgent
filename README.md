@@ -58,6 +58,11 @@ Choose one of these LLM backends:
 
 Minimal config shape:
 ```yaml
+run:
+  manifest: "path/to/sparkapp.yaml"
+  transform: "path/to/job.py"
+  first_run_mode: "base"
+
 llm:
   backend: "router"
   router:
@@ -97,11 +102,8 @@ tuning:
 Run from your workstation or from a pod with cluster access:
 ```bash
 python main.py \
-  --manifest path/to/sparkapp.yaml \
-  --transform path/to/job.py \
   --config path/to/config.yaml \
-  --namespace my-namespace \
-  --use-base-for-first
+  --namespace my-namespace
 ```
 
 Useful optional flags:
@@ -134,10 +136,7 @@ docker compose run --rm lens-agent
 That command runs:
 ```bash
 python main.py \
-  --manifest examples/docker/sparkapp.yaml \
-  --transform examples/docker/job.py \
-  --config examples/docker/config.docker.yaml \
-  --use-base-for-first
+  --config examples/docker/config.docker.yaml
 ```
 
 Artifacts are written to `output/`.
@@ -224,6 +223,11 @@ This uses `spark_submit` against a local Spark standalone cluster defined in `do
 ## Config Shape
 
 ```yaml
+run:
+  manifest: "examples/docker/sparkapp.yaml"
+  transform: "examples/docker/job.py"
+  first_run_mode: "base"
+
 llm:
   backend: "ollama"
   ollama:
@@ -281,6 +285,7 @@ tuning:
 ```
 
 Legacy `llm_router:` config is still accepted and normalized to the new structure.
+The run inputs now come from `run.manifest`, `run.transform`, and `run.first_run_mode`.
 The number of tuning-loop runs now defaults from `tuning.iterations`, and `--iterations` only overrides it.
 The tuning system prompt is configurable through `tuning.prompt`.
 

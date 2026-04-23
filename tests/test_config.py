@@ -16,6 +16,10 @@ llm_router:
   model: "m1"
   timeout_seconds: 10
   allow_models: ["m1"]
+run:
+  manifest: "examples/local/sparkapp.yaml"
+  transform: "examples/local/job.py"
+  first_run_mode: "base"
 spark_history:
   backend: "local"
   local:
@@ -48,6 +52,10 @@ llm:
   backend: "local"
   local:
     strategy: "best_previous"
+run:
+  manifest: "examples/local/sparkapp.yaml"
+  transform: "examples/local/job.py"
+  first_run_mode: "random"
 spark_runtime:
   backend: "local"
   local:
@@ -80,6 +88,7 @@ tuning:
     assert cfg.spark_runtime.local is not None
     assert cfg.spark_runtime.local.app_id_prefix == "demo"
     assert cfg.spark_history.local is not None
+    assert cfg.run.first_run_mode == "random"
     assert cfg.tuning.iterations == 4
     assert cfg.tuning.prompt == "Custom prompt from yaml."
     assert cfg.tuning.llm_json_retries == 5
@@ -93,6 +102,10 @@ llm:
   backend: "local"
   local:
     strategy: "best_previous"
+run:
+  manifest: "examples/local/sparkapp.yaml"
+  transform: "examples/local/job.py"
+  first_run_mode: "llm"
 spark_runtime:
   backend: "local"
   local:
@@ -120,6 +133,7 @@ tuning:
     param = cfg.tuning.params["spark.sql.parquet.compression.codec"]
     assert param.type == "enum"
     assert param.values == ["gzip", "zstd", "lz4"]
+    assert cfg.run.first_run_mode == "llm"
 
 
 def test_router_chat_path_defaults_when_omitted(tmp_path: Path) -> None:
@@ -134,6 +148,9 @@ llm:
     model: "m1"
     timeout_seconds: 10
     allow_models: ["m1"]
+run:
+  manifest: "examples/local/sparkapp.yaml"
+  transform: "examples/local/job.py"
 spark_history:
   backend: "local"
   local:
@@ -163,6 +180,9 @@ llm:
     keep_alive: "10m"
     options:
       num_predict: 128
+run:
+  manifest: "examples/local/sparkapp.yaml"
+  transform: "examples/local/job.py"
 spark_runtime:
   backend: "local"
   local:
@@ -196,6 +216,9 @@ llm:
   backend: "local"
   local:
     strategy: "best_previous"
+run:
+  manifest: "examples/local/sparkapp.yaml"
+  transform: "examples/local/job.py"
 spark_runtime:
   backend: "kubernetes"
   kubernetes:

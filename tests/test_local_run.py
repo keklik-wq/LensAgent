@@ -15,14 +15,10 @@ def test_run_loop_with_local_backends(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(main, "load_dotenv", lambda: None)
 
     args = Namespace(
-        manifest="examples/local/sparkapp.yaml",
-        transform="examples/local/job.py",
         config="examples/local/config.local.yaml",
         history_url=None,
         iterations=None,
         max_total_memory_gb=32,
-        use_base_for_first=True,
-        use_random_for_first=False,
         driver_container=None,
         kube_context=None,
         namespace=None,
@@ -468,14 +464,10 @@ def test_run_loop_deletes_active_application_on_keyboard_interrupt(tmp_path: Pat
     monkeypatch.setattr(main, "build_llm_client", lambda config: object())
 
     args = Namespace(
-        manifest="examples/local/sparkapp.yaml",
-        transform="examples/local/job.py",
         config="examples/local/config.local.yaml",
         history_url=None,
         iterations=1,
         max_total_memory_gb=32,
-        use_base_for_first=True,
-        use_random_for_first=False,
         driver_container=None,
         kube_context=None,
         namespace=None,
