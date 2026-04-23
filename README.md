@@ -171,15 +171,16 @@ Primary path: `uv` with the checked-in lockfile.
 
 ```bash
 uv python install 3.10
-uv sync --extra dev
+uv sync --extra dev --frozen
 ```
 
 That creates a reproducible `.venv` from [`uv.lock`](./uv.lock) and installs lint/test tooling.
 
-If `.venv` already exists from another OS or an older toolchain and `uv sync` cannot reuse it, create a clean environment in a separate directory:
+If `.venv` already exists from another OS or an older toolchain and `uv sync` cannot reuse it, remove it and recreate the same `.venv`:
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.venv-dev uv sync --extra dev --frozen
+rm -rf .venv
+uv sync --extra dev --frozen
 ```
 
 Run checks with:
@@ -203,6 +204,13 @@ Windows PowerShell activation:
 
 ```powershell
 .venv\Scripts\Activate.ps1
+```
+
+If you need to recreate the environment in PowerShell:
+
+```powershell
+Remove-Item -Recurse -Force .venv
+uv sync --extra dev --frozen
 ```
 
 ### Spark standalone mode (Docker Compose)

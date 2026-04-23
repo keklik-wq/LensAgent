@@ -114,6 +114,8 @@ def _coerce_param_value(value: Any, param_type: str) -> Any:
         if isinstance(value, (int, float)):
             return int(value)
         return int(_parse_memory_gb(str(value)))
+    if param_type == "enum":
+        return str(value).strip()
     return str(value)
 
 
@@ -136,6 +138,8 @@ def _constraint_value_kind(spec: TuningParamConfig, value: Any = None) -> str | 
 
 
 def _coerce_constraint_value(value: Any, spec: TuningParamConfig, *, field_name: str) -> Any:
+    if spec.type == "enum":
+        return _coerce_enum_value(value, spec, field_name=field_name)
     kind = _constraint_value_kind(spec, value)
     if kind == "int":
         if not _is_int_like(value):
@@ -157,6 +161,17 @@ def _restore_param_value(value: Any, spec: TuningParamConfig) -> Any:
     if spec.type == "str" and kind in {"int", "float"}:
         return str(value)
     return _coerce_param_value(value, spec.type)
+
+
+def _coerce_enum_value(value: Any, spec: TuningParamConfig, *, field_name: str) -> str:
+    if not spec.values:
+        raise ValueError(f"{field_name} for tuning param has no configured enum values.")
+    normalized = str(value).strip()
+    if normalized not in spec.values:
+        raise ValueError(
+            f"{field_name} for tuning param expects one of {spec.values!r}, got {value!r}."
+        )
+    return normalized
 
 
 def _format_param_value(value: Any, param_type: str) -> Any:
@@ -196,6 +211,9 @@ def _build_response_schema(tuning_params: dict[str, TuningParamConfig]) -> dict[
             param_type = spec.type
         elif spec.type == "memory_gb":
             param_type = "int"
+        elif spec.type == "enum":
+            schema["params"][name] = {"type": "string", "enum": list(spec.values or [])}
+            continue
         schema["params"][name] = param_type
     return schema
 
@@ -209,6 +227,7 @@ def _build_tunable_param_specs(
             "type": spec.type,
             "min": spec.min,
             "max": spec.max,
+            "values": spec.values,
             "default": spec.default,
             "path": spec.path,
         }
@@ -242,6 +261,8 @@ def _validate_params_within_bounds(
         if name not in params:
             continue
         value = _coerce_constraint_value(params[name], spec, field_name=f"{source_label} value")
+        if spec.type == "enum":
+            continue
         if spec.min is not None:
             min_value = _coerce_constraint_value(spec.min, spec, field_name=f"{name}.min")
             if value < min_value:
@@ -385,6 +406,9 @@ def _history_param_signatures(
 
 
 def _next_candidate_values(current: Any, spec: TuningParamConfig) -> list[Any]:
+    if spec.type == "enum":
+        current_value = str(current).strip()
+        return [value for value in (spec.values or []) if value != current_value]
     if spec.type == "bool":
         return [not bool(current)]
     if spec.type == "float":
@@ -447,9 +471,9 @@ def _apply_constraints(
         if value is None:
             raise ValueError(f"Missing tuning parameter value for {name}.")
         coerced = _coerce_constraint_value(value, spec, field_name=f"{name} value")
-        if spec.min is not None:
+        if spec.type != "enum" and spec.min is not None:
             coerced = max(_coerce_constraint_value(spec.min, spec, field_name=f"{name}.min"), coerced)
-        if spec.max is not None:
+        if spec.type != "enum" and spec.max is not None:
             coerced = min(_coerce_constraint_value(spec.max, spec, field_name=f"{name}.max"), coerced)
         resolved[name] = _restore_param_value(coerced, spec)
 
@@ -611,6 +635,11 @@ def _generate_random_params(
     for _ in range(count):
         chosen: dict[str, Any] = {}
         for name, spec in tuning_params.items():
+            if spec.type == "enum":
+                if not spec.values:
+                    raise ValueError(f"Enum tuning parameter {name} has no values.")
+                chosen[name] = random.choice(spec.values)
+                continue
             min_value = spec.min if spec.min is not None else base_params.get(name)
             max_value = spec.max if spec.max is not None else base_params.get(name)
             if min_value is None or max_value is None:
@@ -825,14 +854,14 @@ def run_loop(args: argparse.Namespace) -> None:
             result = runtime.run_application(
                 manifest, namespace, driver_container=args.driver_container
             )
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as exc:
             logger.warning(
                 "Interrupted during run %s, deleting SparkApplication %s",
                 run_id,
                 manifest.get("metadata", {}).get("name", ""),
             )
             runtime.delete_application(manifest, namespace)
-            raise SystemExit("Interrupted, active SparkApplication deleted.")
+            raise SystemExit("Interrupted, active SparkApplication deleted.") from exc
         driver_logs_path = run_dir / "driver.log"
         driver_logs_path.write_text(result.driver_logs or "", encoding="utf-8")
         resolved_app_id, stages = _load_stages_with_retry(

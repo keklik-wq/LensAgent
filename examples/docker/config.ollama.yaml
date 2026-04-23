@@ -50,6 +50,13 @@ tuning:
       type: "int"
       min: 1
       max: 1000
+    spark.sql.parquet.compression.codec:
+      path:
+        - "spec"
+        - "sparkConf"
+        - "spark.sql.parquet.compression.codec"
+      type: "enum"
+      values: "gzip,zstd,lz4"
     executor.cores:
       path: "spec.executor.cores"
       type: "int"

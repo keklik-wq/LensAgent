@@ -79,7 +79,7 @@ Covered behaviors:
 Executed:
 
 ```powershell
-$env:UV_PROJECT_ENVIRONMENT='.venv-dev'; python -m uv run pytest -q tests/test_local_run.py tests/test_runtime.py
+python -m uv run pytest -q tests/test_local_run.py tests/test_runtime.py
 ```
 
 Result:

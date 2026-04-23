@@ -145,6 +145,7 @@ def test_resolve_duplicate_params_changes_candidate() -> None:
             type="int",
             min=1,
             max=1000,
+            values=None,
             default=None,
         ),
         "executor.cores": main.TuningParamConfig(
@@ -152,6 +153,7 @@ def test_resolve_duplicate_params_changes_candidate() -> None:
             type="int",
             min=1,
             max=4,
+            values=None,
             default=None,
         ),
         "executor.instances": main.TuningParamConfig(
@@ -159,6 +161,7 @@ def test_resolve_duplicate_params_changes_candidate() -> None:
             type="int",
             min=1,
             max=8,
+            values=None,
             default=None,
         ),
         "executor.memory_gb": main.TuningParamConfig(
@@ -166,6 +169,7 @@ def test_resolve_duplicate_params_changes_candidate() -> None:
             type="memory_gb",
             min=1,
             max=8,
+            values=None,
             default=None,
         ),
     }
@@ -244,6 +248,7 @@ def test_apply_params_to_manifest_serializes_spark_conf_values_as_strings() -> N
             type="int",
             min=1,
             max=10000,
+            values=None,
             default=None,
         ),
         "executor.cores": main.TuningParamConfig(
@@ -251,6 +256,7 @@ def test_apply_params_to_manifest_serializes_spark_conf_values_as_strings() -> N
             type="int",
             min=1,
             max=16,
+            values=None,
             default=None,
         ),
     }
@@ -265,6 +271,32 @@ def test_apply_params_to_manifest_serializes_spark_conf_values_as_strings() -> N
     assert updated["spec"]["executor"]["cores"] == 6
 
 
+def test_apply_params_to_manifest_keeps_enum_spark_conf_values_as_strings() -> None:
+    manifest = {
+        "spec": {
+            "sparkConf": {"spark.sql.parquet.compression.codec": "zstd"},
+        }
+    }
+    tuning_params = {
+        "spark.sql.parquet.compression.codec": main.TuningParamConfig(
+            path=["spec", "sparkConf", "spark.sql.parquet.compression.codec"],
+            type="enum",
+            min=None,
+            max=None,
+            values=["gzip", "zstd", "lz4"],
+            default=None,
+        ),
+    }
+
+    updated = main._apply_params_to_manifest(
+        manifest=manifest,
+        params={"spark.sql.parquet.compression.codec": "gzip"},
+        tuning_params=tuning_params,
+    )
+
+    assert updated["spec"]["sparkConf"]["spark.sql.parquet.compression.codec"] == "gzip"
+
+
 def test_apply_constraints_treats_numeric_string_bounds_as_numeric() -> None:
     tuning_params = {
         "spark.sql.shuffle.partitions": main.TuningParamConfig(
@@ -272,6 +304,7 @@ def test_apply_constraints_treats_numeric_string_bounds_as_numeric() -> None:
             type="str",
             min="200",
             max="10000",
+            values=None,
             default=None,
         )
     }
@@ -287,6 +320,52 @@ def test_apply_constraints_treats_numeric_string_bounds_as_numeric() -> None:
     assert resolved["spark.sql.shuffle.partitions"] == "2500"
 
 
+def test_apply_constraints_rejects_enum_value_outside_allowed_set() -> None:
+    tuning_params = {
+        "spark.sql.parquet.compression.codec": main.TuningParamConfig(
+            path=["spec", "sparkConf", "spark.sql.parquet.compression.codec"],
+            type="enum",
+            min=None,
+            max=None,
+            values=["gzip", "zstd", "lz4"],
+            default=None,
+        )
+    }
+
+    with pytest.raises(ValueError, match="expects one of"):
+        main._apply_constraints(
+            params={"spark.sql.parquet.compression.codec": "snappy"},
+            base_params={"spark.sql.parquet.compression.codec": "gzip"},
+            tuning_params=tuning_params,
+            driver_memory_gb=1,
+            max_total_memory_gb=None,
+        )
+
+
+def test_resolve_duplicate_params_switches_enum_value() -> None:
+    tuning_params = {
+        "spark.sql.parquet.compression.codec": main.TuningParamConfig(
+            path=["spec", "sparkConf", "spark.sql.parquet.compression.codec"],
+            type="enum",
+            min=None,
+            max=None,
+            values=["gzip", "zstd", "lz4"],
+            default=None,
+        )
+    }
+
+    resolved = main._resolve_duplicate_params(
+        params={"spark.sql.parquet.compression.codec": "gzip"},
+        history=[{"params": {"spark.sql.parquet.compression.codec": "gzip"}}],
+        base_params={"spark.sql.parquet.compression.codec": "gzip"},
+        tuning_params=tuning_params,
+        driver_memory_gb=1,
+        max_total_memory_gb=None,
+    )
+
+    assert resolved["spark.sql.parquet.compression.codec"] in {"zstd", "lz4"}
+
+
 def test_validate_params_within_bounds_raises_for_base_manifest_out_of_range() -> None:
     tuning_params = {
         "spark.sql.shuffle.partitions": main.TuningParamConfig(
@@ -294,6 +373,7 @@ def test_validate_params_within_bounds_raises_for_base_manifest_out_of_range() -
             type="str",
             min="3000",
             max="10000",
+            values=None,
             default=None,
         )
     }
@@ -301,6 +381,29 @@ def test_validate_params_within_bounds_raises_for_base_manifest_out_of_range() -
     with pytest.raises(ValueError, match="Base manifest value for spark.sql.shuffle.partitions"):
         main._validate_params_within_bounds(
             {"spark.sql.shuffle.partitions": "2500"},
+            tuning_params,
+            source_label="Base manifest value",
+        )
+
+
+def test_validate_params_within_bounds_rejects_base_manifest_enum_value_outside_allowed_set() -> None:
+    tuning_params = {
+        "spark.sql.parquet.compression.codec": main.TuningParamConfig(
+            path=["spec", "sparkConf", "spark.sql.parquet.compression.codec"],
+            type="enum",
+            min=None,
+            max=None,
+            values=["gzip", "zstd", "lz4"],
+            default=None,
+        )
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="Base manifest value value for tuning param expects one of",
+    ):
+        main._validate_params_within_bounds(
+            {"spark.sql.parquet.compression.codec": "snappy"},
             tuning_params,
             source_label="Base manifest value",
         )

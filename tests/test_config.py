@@ -85,6 +85,43 @@ tuning:
     assert cfg.tuning.llm_json_retries == 5
 
 
+def test_loads_enum_tuning_param_values(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+llm:
+  backend: "local"
+  local:
+    strategy: "best_previous"
+spark_runtime:
+  backend: "local"
+  local:
+    app_id_prefix: "demo"
+    final_state: "COMPLETED"
+    driver_log_template: "{app_id}"
+spark_history:
+  backend: "local"
+  local:
+    fixtures_path: "examples/local/history"
+    base_url: "http://history"
+    default_app_id: "local-app-001"
+tuning:
+  params:
+    spark.sql.parquet.compression.codec:
+      path: "spec.sparkConf.spark.sql.parquet.compression.codec"
+      type: "enum"
+      values: "gzip,zstd,lz4"
+""",
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig.load(config_path)
+
+    param = cfg.tuning.params["spark.sql.parquet.compression.codec"]
+    assert param.type == "enum"
+    assert param.values == ["gzip", "zstd", "lz4"]
+
+
 def test_router_chat_path_defaults_when_omitted(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
