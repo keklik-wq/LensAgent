@@ -1,9 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "spark-llm-agent-shell"
 version = "0.1.0"
 description = "Policy-driven shell around an LLM for Spark optimization workflows."
 requires-python = ">=3.10"
 dependencies = [
+  "pydantic>=2,<3",
   "pyyaml",
   "python-dotenv",
 ]
@@ -24,6 +29,12 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
