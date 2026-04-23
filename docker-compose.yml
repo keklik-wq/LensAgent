@@ -121,15 +121,8 @@ services:
       [
         "python3",
         "main.py",
-        "--manifest",
-        "examples/docker/sparkapp.yaml",
-        "--transform",
-        "examples/docker/job.py",
         "--config",
-        "examples/docker/config.docker.yaml",
-        "--history-url",
-        "http://spark-history:18080",
-        "--use-base-for-first"
+        "examples/docker/config.docker.yaml"
       ]
 
   lens-agent-standalone:
@@ -155,15 +148,8 @@ services:
       [
         "python3",
         "main.py",
-        "--manifest",
-        "examples/docker/sparkapp.yaml",
-        "--transform",
-        "examples/docker/job.py",
         "--config",
-        "examples/docker/config.standalone.yaml",
-        "--history-url",
-        "http://spark-history:18080",
-        "--use-base-for-first"
+        "examples/docker/config.standalone.yaml"
       ]
 
   lens-agent-ollama:
@@ -189,15 +175,8 @@ services:
       [
         "python3",
         "main.py",
-        "--manifest",
-        "examples/docker/sparkapp.yaml",
-        "--transform",
-        "examples/docker/job.py",
         "--config",
-        "examples/docker/config.ollama.yaml",
-        "--history-url",
-        "http://spark-history:18080",
-        "--use-base-for-first"
+        "examples/docker/config.ollama.yaml"
       ]
 
 volumes:

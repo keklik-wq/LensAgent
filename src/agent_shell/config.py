@@ -112,7 +112,17 @@ class TuningConfig:
 
 
 @dataclass(frozen=True)
+class RunConfig:
+    manifest: str
+    transform: str
+    first_run_mode: str
+
+
+@dataclass(frozen=True)
 class AppConfig:
+    config_path: Path
+    config_dir: Path
+    run: RunConfig
     llm: LlmConfig
     spark_runtime: SparkRuntimeConfig
     spark_history: SparkHistoryConfig
@@ -120,11 +130,15 @@ class AppConfig:
 
     @staticmethod
     def load(path: str | Path) -> AppConfig:
-        raw = yaml.safe_load(Path(path).read_text())
+        config_path = Path(path).resolve()
+        raw = yaml.safe_load(config_path.read_text())
         if not isinstance(raw, dict):
             raise SystemExit(f"Config at {path} is empty or invalid YAML.")
         normalized = _normalize_legacy_config(raw)
         return AppConfig(
+            config_path=config_path,
+            config_dir=config_path.parent,
+            run=_coerce_run(normalized.get("run")),
             llm=_coerce_llm(normalized.get("llm")),
             spark_runtime=_coerce_spark_runtime(normalized.get("spark_runtime")),
             spark_history=_coerce_spark_history(normalized.get("spark_history")),
@@ -134,6 +148,8 @@ class AppConfig:
 
 def _normalize_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     data = dict(raw)
+    if "run" not in data:
+        raise SystemExit("Config is missing required section: run")
     if "llm" not in data:
         router = data.get("llm_router")
         if not isinstance(router, dict):
@@ -155,6 +171,25 @@ def _normalize_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     if "tuning" not in data:
         data["tuning"] = _default_tuning()
     return data
+
+
+def _coerce_run(raw: Any) -> RunConfig:
+    if not isinstance(raw, dict):
+        raise SystemExit("Config section run must be a mapping.")
+    manifest = raw.get("manifest")
+    transform = raw.get("transform")
+    if not manifest:
+        raise SystemExit("run.manifest is required.")
+    if not transform:
+        raise SystemExit("run.transform is required.")
+    first_run_mode = str(raw.get("first_run_mode", "llm"))
+    if first_run_mode not in {"llm", "base", "random"}:
+        raise SystemExit("run.first_run_mode must be one of: llm, base, random.")
+    return RunConfig(
+        manifest=str(manifest),
+        transform=str(transform),
+        first_run_mode=first_run_mode,
+    )
 
 
 def _coerce_llm(raw: Any) -> LlmConfig:
