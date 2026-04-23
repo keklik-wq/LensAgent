@@ -381,6 +381,8 @@ def _build_llm_history_entry(run_meta: dict[str, Any]) -> dict[str, Any]:
         "params": run_meta.get("params"),
         "rationale": run_meta.get("rationale"),
         "application_state": run_meta.get("application_state"),
+        "failure_reason": run_meta.get("failure_reason"),
+        "driver_error_excerpt": run_meta.get("driver_error_excerpt"),
         "runtime_seconds": run_meta.get("runtime_seconds"),
         "requested_gb": run_meta.get("requested_gb"),
         "requested_gb_seconds": run_meta.get("requested_gb_seconds"),
@@ -609,6 +611,15 @@ def _collect_metrics_from_stages(stages: list[dict[str, Any]]) -> dict[str, Any]
         "runtime_seconds": runtime_seconds,
         "spill_gb": (memory_spill + disk_spill) / (1024**3),
     }
+
+
+def _build_driver_error_excerpt(driver_logs: str, max_chars: int = 4000) -> str:
+    text = (driver_logs or "").strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[-max_chars:]
 
 
 def _load_stages_with_retry(
@@ -851,6 +862,8 @@ def run_loop(args: argparse.Namespace) -> None:
             "small_files": None,
             "app_id": "",
             "application_state": "",
+            "failure_reason": "",
+            "driver_error_excerpt": "",
             "history_api": "",
             "driver_logs": "",
             "driver_logs_path": "",
@@ -893,6 +906,8 @@ def run_loop(args: argparse.Namespace) -> None:
             {
                 "app_id": resolved_app_id,
                 "application_state": result.final_state,
+                "failure_reason": result.error_message,
+                "driver_error_excerpt": _build_driver_error_excerpt(result.driver_logs),
                 "history_api": history_provider.stages_url(resolved_app_id),
                 "spark_ui": history_provider.ui_url(resolved_app_id),
                 "runtime_seconds": metrics.get("runtime_seconds"),
