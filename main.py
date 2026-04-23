@@ -57,6 +57,30 @@ def _format_memory_gb(gb: int) -> str:
     return f"{gb}g"
 
 
+def _is_int_like(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        return value.is_integer()
+    text = str(value).strip()
+    return bool(re.fullmatch(r"[+-]?\d+", text))
+
+
+def _is_float_like(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    text = str(value).strip()
+    try:
+        float(text)
+    except ValueError:
+        return False
+    return True
+
+
 def _get_by_path(data: dict[str, Any], path: list[str]) -> Any:
     current: Any = data
     for part in path:
@@ -91,6 +115,48 @@ def _coerce_param_value(value: Any, param_type: str) -> Any:
             return int(value)
         return int(_parse_memory_gb(str(value)))
     return str(value)
+
+
+def _constraint_value_kind(spec: TuningParamConfig, value: Any = None) -> str | None:
+    if spec.type in {"int", "memory_gb"}:
+        return "int"
+    if spec.type == "float":
+        return "float"
+    if spec.type != "str":
+        return None
+
+    samples = [item for item in (value, spec.min, spec.max, spec.default) if item is not None]
+    if not samples:
+        return None
+    if all(_is_int_like(item) for item in samples):
+        return "int"
+    if all(_is_float_like(item) for item in samples):
+        return "float"
+    return None
+
+
+def _coerce_constraint_value(value: Any, spec: TuningParamConfig, *, field_name: str) -> Any:
+    kind = _constraint_value_kind(spec, value)
+    if kind == "int":
+        if not _is_int_like(value):
+            raise ValueError(
+                f"{field_name} for tuning param expects an integer-like value, got {value!r}."
+            )
+        return int(str(value).strip())
+    if kind == "float":
+        if not _is_float_like(value):
+            raise ValueError(
+                f"{field_name} for tuning param expects a numeric value, got {value!r}."
+            )
+        return float(str(value).strip())
+    return _coerce_param_value(value, spec.type)
+
+
+def _restore_param_value(value: Any, spec: TuningParamConfig) -> Any:
+    kind = _constraint_value_kind(spec, value)
+    if spec.type == "str" and kind in {"int", "float"}:
+        return str(value)
+    return _coerce_param_value(value, spec.type)
 
 
 def _format_param_value(value: Any, param_type: str) -> Any:
@@ -164,6 +230,30 @@ def _build_base_params(
             raw = spec.default
         base_params[name] = _coerce_param_value(raw, spec.type)
     return base_params
+
+
+def _validate_params_within_bounds(
+    params: dict[str, Any],
+    tuning_params: dict[str, TuningParamConfig],
+    *,
+    source_label: str,
+) -> None:
+    for name, spec in tuning_params.items():
+        if name not in params:
+            continue
+        value = _coerce_constraint_value(params[name], spec, field_name=f"{source_label} value")
+        if spec.min is not None:
+            min_value = _coerce_constraint_value(spec.min, spec, field_name=f"{name}.min")
+            if value < min_value:
+                raise ValueError(
+                    f"{source_label} for {name} is {params[name]!r}, below configured minimum {spec.min!r}."
+                )
+        if spec.max is not None:
+            max_value = _coerce_constraint_value(spec.max, spec, field_name=f"{name}.max")
+            if value > max_value:
+                raise ValueError(
+                    f"{source_label} for {name} is {params[name]!r}, above configured maximum {spec.max!r}."
+                )
 
 
 def _is_spark_conf_path(path: list[str]) -> bool:
@@ -356,12 +446,12 @@ def _apply_constraints(
         value = params.get(name, base_params.get(name, spec.default))
         if value is None:
             raise ValueError(f"Missing tuning parameter value for {name}.")
-        coerced = _coerce_param_value(value, spec.type)
+        coerced = _coerce_constraint_value(value, spec, field_name=f"{name} value")
         if spec.min is not None:
-            coerced = max(_coerce_param_value(spec.min, spec.type), coerced)
+            coerced = max(_coerce_constraint_value(spec.min, spec, field_name=f"{name}.min"), coerced)
         if spec.max is not None:
-            coerced = min(_coerce_param_value(spec.max, spec.type), coerced)
-        resolved[name] = coerced
+            coerced = min(_coerce_constraint_value(spec.max, spec, field_name=f"{name}.max"), coerced)
+        resolved[name] = _restore_param_value(coerced, spec)
 
     if max_total_memory_gb is not None:
         mem_gb = resolved.get("executor.memory_gb")
@@ -618,6 +708,11 @@ def run_loop(args: argparse.Namespace) -> None:
     campaign_id = _build_campaign_id()
     history: list[dict[str, Any]] = []
     base_params = _build_base_params(base_manifest, tuning_params)
+    _validate_params_within_bounds(
+        base_params,
+        tuning_params,
+        source_label="Base manifest value",
+    )
 
     for iteration in range(1, iterations + 1):
         run_id = _build_run_id(iteration)
@@ -726,9 +821,18 @@ def run_loop(args: argparse.Namespace) -> None:
         )
 
         logger.info("Run %s: submitting Spark job", run_id)
-        result = runtime.run_application(
-            manifest, namespace, driver_container=args.driver_container
-        )
+        try:
+            result = runtime.run_application(
+                manifest, namespace, driver_container=args.driver_container
+            )
+        except KeyboardInterrupt:
+            logger.warning(
+                "Interrupted during run %s, deleting SparkApplication %s",
+                run_id,
+                manifest.get("metadata", {}).get("name", ""),
+            )
+            runtime.delete_application(manifest, namespace)
+            raise SystemExit("Interrupted, active SparkApplication deleted.")
         driver_logs_path = run_dir / "driver.log"
         driver_logs_path.write_text(result.driver_logs or "", encoding="utf-8")
         resolved_app_id, stages = _load_stages_with_retry(

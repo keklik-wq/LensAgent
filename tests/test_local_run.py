@@ -265,6 +265,47 @@ def test_apply_params_to_manifest_serializes_spark_conf_values_as_strings() -> N
     assert updated["spec"]["executor"]["cores"] == 6
 
 
+def test_apply_constraints_treats_numeric_string_bounds_as_numeric() -> None:
+    tuning_params = {
+        "spark.sql.shuffle.partitions": main.TuningParamConfig(
+            path=["spec", "sparkConf", "spark.sql.shuffle.partitions"],
+            type="str",
+            min="200",
+            max="10000",
+            default=None,
+        )
+    }
+
+    resolved = main._apply_constraints(
+        params={},
+        base_params={"spark.sql.shuffle.partitions": "2500"},
+        tuning_params=tuning_params,
+        driver_memory_gb=1,
+        max_total_memory_gb=None,
+    )
+
+    assert resolved["spark.sql.shuffle.partitions"] == "2500"
+
+
+def test_validate_params_within_bounds_raises_for_base_manifest_out_of_range() -> None:
+    tuning_params = {
+        "spark.sql.shuffle.partitions": main.TuningParamConfig(
+            path=["spec", "sparkConf", "spark.sql.shuffle.partitions"],
+            type="str",
+            min="3000",
+            max="10000",
+            default=None,
+        )
+    }
+
+    with pytest.raises(ValueError, match="Base manifest value for spark.sql.shuffle.partitions"):
+        main._validate_params_within_bounds(
+            {"spark.sql.shuffle.partitions": "2500"},
+            tuning_params,
+            source_label="Base manifest value",
+        )
+
+
 def test_load_stages_with_retry_does_not_switch_to_latest_app_id() -> None:
     calls: list[str] = []
 
@@ -286,3 +327,60 @@ def test_load_stages_with_retry_does_not_switch_to_latest_app_id() -> None:
 
     assert calls
     assert all(app_id == "spark-original" for app_id in calls)
+
+
+def test_run_loop_deletes_active_application_on_keyboard_interrupt(tmp_path: Path, monkeypatch) -> None:
+    output_dir = tmp_path / "output"
+    monkeypatch.setattr(main, "OUTPUT_DIR", output_dir)
+    monkeypatch.setattr(main, "RUNS_DIR", output_dir / "runs")
+    monkeypatch.setattr(main, "LOG_DIR", output_dir / "logs")
+    monkeypatch.setattr(main, "load_dotenv", lambda: None)
+    monkeypatch.setattr(main, "_build_campaign_id", lambda: "abcd")
+
+    deleted: list[tuple[str, str]] = []
+
+    class FakeRuntime:
+        def run_application(
+            self,
+            manifest: dict[str, object],
+            namespace: str,
+            driver_container: str | None = None,
+        ):
+            del manifest, namespace, driver_container
+            raise KeyboardInterrupt
+
+        def delete_application(self, manifest: dict[str, object], namespace: str) -> None:
+            deleted.append((str(manifest["metadata"]["name"]), namespace))  # type: ignore[index]
+
+    class FakeHistoryProvider:
+        def ui_url(self, app_id: str) -> str:
+            return f"http://history/{app_id}"
+
+    monkeypatch.setattr(main, "build_spark_runtime", lambda config, kube_context=None: FakeRuntime())
+    monkeypatch.setattr(
+        main,
+        "build_spark_history_provider",
+        lambda config, base_url_override=None: FakeHistoryProvider(),
+    )
+    monkeypatch.setattr(main, "build_llm_client", lambda config: object())
+
+    args = Namespace(
+        manifest="examples/local/sparkapp.yaml",
+        transform="examples/local/job.py",
+        config="examples/local/config.local.yaml",
+        history_url=None,
+        iterations=1,
+        max_total_memory_gb=32,
+        use_base_for_first=True,
+        use_random_for_first=False,
+        driver_container=None,
+        kube_context=None,
+        namespace=None,
+    )
+
+    main._ensure_dirs()
+
+    with pytest.raises(SystemExit, match="Interrupted, active SparkApplication deleted."):
+        main.run_loop(args)
+
+    assert deleted == [("local-spark-job-abcd-r001", "local-jobs")]

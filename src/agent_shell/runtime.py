@@ -23,6 +23,8 @@ class SparkRuntime(Protocol):
         driver_container: str | None = None,
     ) -> SparkRunResult: ...
 
+    def delete_application(self, manifest: dict[str, Any], namespace: str) -> None: ...
+
 
 class KubernetesSparkRuntime:
     def __init__(self, kube_context: str | None, kubeconfig_path: str | None = None) -> None:
@@ -43,14 +45,7 @@ class KubernetesSparkRuntime:
         namespace: str,
         driver_container: str | None = None,
     ) -> SparkRunResult:
-        api_version = manifest.get("apiVersion", "")
-        kind = manifest.get("kind", "")
-        if kind != "SparkApplication" or "/" not in api_version:
-            raise SystemExit("Only SparkApplication manifests are supported.")
-        group, version = api_version.split("/", 1)
-        name = manifest.get("metadata", {}).get("name")
-        if not name:
-            raise SystemExit("Manifest metadata.name is required.")
+        group, version, _, name = self._resource_parts(manifest)
         self._apply(group, version, namespace, name, manifest)
         status_obj = self._wait_for_completion(group, version, namespace, name)
         app_id = self._app_id_from_status(status_obj)
@@ -69,6 +64,20 @@ class KubernetesSparkRuntime:
             final_state=status_obj.get("status", {}).get("applicationState", {}).get("state", ""),
             driver_logs=logs,
         )
+
+    def delete_application(self, manifest: dict[str, Any], namespace: str) -> None:
+        group, version, plural, name = self._resource_parts(manifest)
+        try:
+            self._custom_api.delete_namespaced_custom_object(
+                group=group,
+                version=version,
+                namespace=namespace,
+                plural=plural,
+                name=name,
+            )
+        except self._k8s_client.exceptions.ApiException as exc:
+            if exc.status != 404:
+                raise
 
     def _apply(
         self,
@@ -98,6 +107,17 @@ class KubernetesSparkRuntime:
                 )
             else:
                 raise
+
+    def _resource_parts(self, manifest: dict[str, Any]) -> tuple[str, str, str, str]:
+        api_version = manifest.get("apiVersion", "")
+        kind = manifest.get("kind", "")
+        if kind != "SparkApplication" or "/" not in api_version:
+            raise SystemExit("Only SparkApplication manifests are supported.")
+        group, version = api_version.split("/", 1)
+        name = str(manifest.get("metadata", {}).get("name", ""))
+        if not name:
+            raise SystemExit("Manifest metadata.name is required.")
+        return group, version, "sparkapplications", name
 
     def _wait_for_completion(
         self,
@@ -192,6 +212,10 @@ class SparkSubmitRuntime:
             driver_logs=logs,
         )
 
+    def delete_application(self, manifest: dict[str, Any], namespace: str) -> None:
+        del manifest, namespace
+        return None
+
     def _build_submit_command(self, manifest: dict[str, Any], namespace: str) -> list[str]:
         del namespace
         spec = manifest.get("spec", {})
@@ -281,6 +305,10 @@ class LocalSparkRuntime:
             final_state=self._final_state,
             driver_logs=logs,
         )
+
+    def delete_application(self, manifest: dict[str, Any], namespace: str) -> None:
+        del manifest, namespace
+        return None
 
 
 def _normalize_app_path(app_file: str) -> str:
