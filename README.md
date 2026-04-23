@@ -16,11 +16,6 @@ Use:
 - `spark_runtime.backend=kubernetes`
 - `spark_history.backend=http`
 
-Install Kubernetes support only when you need it:
-```bash
-uv pip install -e ".[kubernetes]"
-```
-
 ### Local run
 Use:
 - `llm.backend=local`
@@ -46,11 +41,6 @@ Prerequisites:
 - Spark Operator installed in the target cluster
 - a reachable Spark History Server URL for `spark_history.http.base_url`
 - an LLM endpoint reachable from the tuning process
-
-Install the Kubernetes runtime dependency:
-```bash
-uv pip install -e ".[kubernetes]"
-```
 
 Choose one of these LLM backends:
 - `llm.backend=router` for a remote router/OpenAI-compatible service
@@ -291,7 +281,7 @@ The tuning system prompt is configurable through `tuning.prompt`.
 ## Why this refactor
 
 - `main.py` composes adapters instead of instantiating Kubernetes and HTTP dependencies inline.
-- Local execution no longer needs the `kubernetes` package.
+- Local execution still uses the same config/runtime abstraction instead of being tied to Kubernetes-specific code paths.
 - Replacing one environment with another is now a config change, not a rewrite.
 
 ## Adding a new tuning parameter
