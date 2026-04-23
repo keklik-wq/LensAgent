@@ -284,7 +284,6 @@ tuning:
       max: 500
 ```
 
-Legacy `llm_router:` config is still accepted and normalized to the new structure.
 The run inputs now come from `run.manifest`, `run.transform`, and `run.first_run_mode`.
 The number of tuning-loop runs now defaults from `tuning.iterations`, and `--iterations` only overrides it.
 The tuning system prompt is configurable through `tuning.prompt`.

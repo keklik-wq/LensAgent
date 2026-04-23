@@ -1,428 +1,184 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
-@dataclass(frozen=True)
-class RouterLlmConfig:
+class ConfigModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class RouterLlmConfig(ConfigModel):
     base_url: str
-    chat_path: str
+    chat_path: str = "/v1/chat/completions"
     api_key_env: str
     model: str
-    timeout_seconds: int
-    allow_models: list[str]
+    timeout_seconds: int = 30
+    allow_models: list[str] = Field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class LocalLlmConfig:
-    strategy: str
+class LocalLlmConfig(ConfigModel):
+    strategy: str = "best_previous"
 
 
-@dataclass(frozen=True)
-class OllamaLlmConfig:
-    base_url: str
+class OllamaLlmConfig(ConfigModel):
+    base_url: str = "http://127.0.0.1:11434"
     model: str
-    timeout_seconds: int
-    keep_alive: str | None
-    options: dict[str, Any]
+    timeout_seconds: int = 60
+    keep_alive: str | None = None
+    options: dict[str, Any] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class LlmConfig:
-    backend: str
-    router: RouterLlmConfig | None
-    local: LocalLlmConfig | None
-    ollama: OllamaLlmConfig | None
+class LlmConfig(ConfigModel):
+    backend: Literal["router", "local", "ollama"]
+    router: RouterLlmConfig | None = None
+    local: LocalLlmConfig | None = None
+    ollama: OllamaLlmConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_backend_config(self) -> LlmConfig:
+        if self.backend == "router":
+            if self.router is None:
+                raise ValueError("llm.backend=router requires llm.router.")
+            self.local = None
+            self.ollama = None
+        elif self.backend == "local":
+            if self.local is None:
+                self.local = LocalLlmConfig()
+            self.router = None
+            self.ollama = None
+        elif self.backend == "ollama":
+            if self.ollama is None:
+                raise ValueError("llm.backend=ollama requires llm.ollama.")
+            self.router = None
+            self.local = None
+        return self
 
 
-@dataclass(frozen=True)
-class KubernetesRuntimeConfig:
-    kube_context: str | None
-    kubeconfig_path: str | None
+class KubernetesRuntimeConfig(ConfigModel):
+    kube_context: str | None = None
+    kubeconfig_path: str | None = None
 
 
-@dataclass(frozen=True)
-class SparkSubmitRuntimeConfig:
-    spark_submit_bin: str
-    master_url: str
-    deploy_mode: str
-    event_log_dir: str
-    poll_seconds: float
-    timeout_seconds: int
+class SparkSubmitRuntimeConfig(ConfigModel):
+    spark_submit_bin: str = "spark-submit"
+    master_url: str = "local[*]"
+    deploy_mode: str = "client"
+    event_log_dir: str = "/tmp/spark-events"
+    poll_seconds: float = 2.0
+    timeout_seconds: int = 300
 
 
-@dataclass(frozen=True)
-class LocalRuntimeConfig:
-    app_id_prefix: str
-    final_state: str
-    driver_log_template: str
+class LocalRuntimeConfig(ConfigModel):
+    app_id_prefix: str = "local-app"
+    final_state: str = "COMPLETED"
+    driver_log_template: str = (
+        "Submitted application {app_id} for {app_name} in namespace {namespace}"
+    )
 
 
-@dataclass(frozen=True)
-class SparkRuntimeConfig:
-    backend: str
-    kubernetes: KubernetesRuntimeConfig | None
-    spark_submit: SparkSubmitRuntimeConfig | None
-    local: LocalRuntimeConfig | None
+class SparkRuntimeConfig(ConfigModel):
+    backend: Literal["kubernetes", "spark_submit", "local"]
+    kubernetes: KubernetesRuntimeConfig | None = None
+    spark_submit: SparkSubmitRuntimeConfig | None = None
+    local: LocalRuntimeConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_backend_config(self) -> SparkRuntimeConfig:
+        if self.backend == "kubernetes":
+            if self.kubernetes is None:
+                self.kubernetes = KubernetesRuntimeConfig()
+            self.spark_submit = None
+            self.local = None
+        elif self.backend == "spark_submit":
+            if self.spark_submit is None:
+                self.spark_submit = SparkSubmitRuntimeConfig()
+            self.kubernetes = None
+            self.local = None
+        elif self.backend == "local":
+            if self.local is None:
+                self.local = LocalRuntimeConfig()
+            self.kubernetes = None
+            self.spark_submit = None
+        return self
 
 
-@dataclass(frozen=True)
-class HttpHistoryConfig:
+class HttpHistoryConfig(ConfigModel):
     base_url: str
-    timeout_seconds: int
+    timeout_seconds: int = 30
 
 
-@dataclass(frozen=True)
-class LocalHistoryConfig:
-    base_url: str
+class LocalHistoryConfig(ConfigModel):
+    base_url: str = "http://local-history"
     fixtures_path: str
-    default_app_id: str
+    default_app_id: str = "local-app-001"
 
 
-@dataclass(frozen=True)
-class SparkHistoryConfig:
-    backend: str
-    http: HttpHistoryConfig | None
-    local: LocalHistoryConfig | None
-    poll_seconds: float
-    timeout_seconds: int
+class SparkHistoryConfig(ConfigModel):
+    backend: Literal["http", "local"]
+    http: HttpHistoryConfig | None = None
+    local: LocalHistoryConfig | None = None
+    poll_seconds: float = 2.0
+    timeout_seconds: int = 120
+
+    @model_validator(mode="after")
+    def validate_backend_config(self) -> SparkHistoryConfig:
+        if self.backend == "http":
+            if self.http is None:
+                raise ValueError("spark_history.backend=http requires spark_history.http.")
+            self.local = None
+        elif self.backend == "local":
+            if self.local is None:
+                raise ValueError("spark_history.backend=local requires spark_history.local.")
+            self.http = None
+        return self
 
 
-@dataclass(frozen=True)
-class TuningParamConfig:
+class TuningParamConfig(ConfigModel):
     path: list[str]
-    type: str
-    min: float | int | None
-    max: float | int | None
-    values: list[str] | None
-    default: object | None
+    type: Literal["int", "float", "bool", "memory_gb", "str", "enum"] = "int"
+    min: float | int | str | None = None
+    max: float | int | str | None = None
+    values: list[str] | None = None
+    default: object | None = None
 
-
-@dataclass(frozen=True)
-class TuningConfig:
-    iterations: int
-    prompt: str
-    llm_json_retries: int
-    params: dict[str, TuningParamConfig]
-    total_memory_gb_max: int | None
-
-
-@dataclass(frozen=True)
-class RunConfig:
-    manifest: str
-    transform: str
-    first_run_mode: str
-
-
-@dataclass(frozen=True)
-class AppConfig:
-    config_path: Path
-    config_dir: Path
-    run: RunConfig
-    llm: LlmConfig
-    spark_runtime: SparkRuntimeConfig
-    spark_history: SparkHistoryConfig
-    tuning: TuningConfig
-
-    @staticmethod
-    def load(path: str | Path) -> AppConfig:
-        config_path = Path(path).resolve()
-        raw = yaml.safe_load(config_path.read_text())
-        if not isinstance(raw, dict):
-            raise SystemExit(f"Config at {path} is empty or invalid YAML.")
-        normalized = _normalize_legacy_config(raw)
-        return AppConfig(
-            config_path=config_path,
-            config_dir=config_path.parent,
-            run=_coerce_run(normalized.get("run")),
-            llm=_coerce_llm(normalized.get("llm")),
-            spark_runtime=_coerce_spark_runtime(normalized.get("spark_runtime")),
-            spark_history=_coerce_spark_history(normalized.get("spark_history")),
-            tuning=_coerce_tuning(normalized.get("tuning")),
-        )
-
-
-def _normalize_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
-    data = dict(raw)
-    if "run" not in data:
-        raise SystemExit("Config is missing required section: run")
-    if "llm" not in data:
-        router = data.get("llm_router")
-        if not isinstance(router, dict):
-            raise SystemExit("Config is missing required section: llm or llm_router")
-        data["llm"] = {
-            "backend": "router",
-            "router": router,
-        }
-    if "spark_runtime" not in data:
-        data["spark_runtime"] = {
-            "backend": "kubernetes",
-            "kubernetes": {
-                "kube_context": None,
-                "kubeconfig_path": None,
-            },
-        }
-    if "spark_history" not in data:
-        raise SystemExit("Config is missing required section: spark_history")
-    if "tuning" not in data:
-        data["tuning"] = _default_tuning()
-    return data
-
-
-def _coerce_run(raw: Any) -> RunConfig:
-    if not isinstance(raw, dict):
-        raise SystemExit("Config section run must be a mapping.")
-    manifest = raw.get("manifest")
-    transform = raw.get("transform")
-    if not manifest:
-        raise SystemExit("run.manifest is required.")
-    if not transform:
-        raise SystemExit("run.transform is required.")
-    first_run_mode = str(raw.get("first_run_mode", "llm"))
-    if first_run_mode not in {"llm", "base", "random"}:
-        raise SystemExit("run.first_run_mode must be one of: llm, base, random.")
-    return RunConfig(
-        manifest=str(manifest),
-        transform=str(transform),
-        first_run_mode=first_run_mode,
-    )
-
-
-def _coerce_llm(raw: Any) -> LlmConfig:
-    if not isinstance(raw, dict):
-        raise SystemExit("Config section llm must be a mapping.")
-    backend = str(raw.get("backend", "router"))
-    router = raw.get("router")
-    local = raw.get("local")
-    ollama = raw.get("ollama")
-    if backend == "router":
-        if not isinstance(router, dict):
-            raise SystemExit("llm.backend=router requires llm.router.")
-        return LlmConfig(
-            backend=backend,
-            router=_coerce_router_llm(router),
-            local=None,
-            ollama=None,
-        )
-    if backend == "local":
-        return LlmConfig(
-            backend=backend,
-            router=None,
-            local=_coerce_local_llm(local or {}),
-            ollama=None,
-        )
-    if backend == "ollama":
-        if not isinstance(ollama, dict):
-            raise SystemExit("llm.backend=ollama requires llm.ollama.")
-        return LlmConfig(
-            backend=backend,
-            router=None,
-            local=None,
-            ollama=_coerce_ollama_llm(ollama),
-        )
-    raise SystemExit(f"Unsupported llm backend: {backend}")
-
-
-def _coerce_router_llm(raw: dict[str, Any]) -> RouterLlmConfig:
-    return RouterLlmConfig(
-        base_url=str(raw["base_url"]),
-        chat_path=str(raw.get("chat_path", "/v1/chat/completions")),
-        api_key_env=str(raw["api_key_env"]),
-        model=str(raw["model"]),
-        timeout_seconds=int(raw.get("timeout_seconds", 30)),
-        allow_models=list(raw.get("allow_models", [])),
-    )
-
-
-def _coerce_local_llm(raw: dict[str, Any]) -> LocalLlmConfig:
-    return LocalLlmConfig(
-        strategy=str(raw.get("strategy", "best_previous")),
-    )
-
-
-def _coerce_ollama_llm(raw: dict[str, Any]) -> OllamaLlmConfig:
-    model = raw.get("model")
-    if not model:
-        raise SystemExit("llm.ollama.model is required.")
-    options = raw.get("options") or {}
-    if not isinstance(options, dict):
-        raise SystemExit("llm.ollama.options must be a mapping when provided.")
-    return OllamaLlmConfig(
-        base_url=str(raw.get("base_url", "http://127.0.0.1:11434")),
-        model=str(model),
-        timeout_seconds=int(raw.get("timeout_seconds", 60)),
-        keep_alive=_coerce_optional_str(raw.get("keep_alive")),
-        options=dict(options),
-    )
-
-
-def _coerce_spark_runtime(raw: Any) -> SparkRuntimeConfig:
-    if not isinstance(raw, dict):
-        raise SystemExit("Config section spark_runtime must be a mapping.")
-    backend = str(raw.get("backend", "kubernetes"))
-    if backend == "kubernetes":
-        return SparkRuntimeConfig(
-            backend=backend,
-            kubernetes=KubernetesRuntimeConfig(
-                kube_context=_coerce_optional_str(
-                    (raw.get("kubernetes") or {}).get("kube_context")
-                ),
-                kubeconfig_path=_coerce_optional_str(
-                    (raw.get("kubernetes") or {}).get("kubeconfig_path")
-                ),
-            ),
-            spark_submit=None,
-            local=None,
-        )
-    if backend == "spark_submit":
-        return SparkRuntimeConfig(
-            backend=backend,
-            kubernetes=None,
-            spark_submit=_coerce_spark_submit_runtime(raw.get("spark_submit") or {}),
-            local=None,
-        )
-    if backend == "local":
-        return SparkRuntimeConfig(
-            backend=backend,
-            kubernetes=None,
-            spark_submit=None,
-            local=_coerce_local_runtime(raw.get("local") or {}),
-        )
-    raise SystemExit(f"Unsupported spark_runtime backend: {backend}")
-
-
-def _coerce_spark_submit_runtime(raw: dict[str, Any]) -> SparkSubmitRuntimeConfig:
-    return SparkSubmitRuntimeConfig(
-        spark_submit_bin=str(raw.get("spark_submit_bin", "spark-submit")),
-        master_url=str(raw.get("master_url", "local[*]")),
-        deploy_mode=str(raw.get("deploy_mode", "client")),
-        event_log_dir=str(raw.get("event_log_dir", "/tmp/spark-events")),
-        poll_seconds=float(raw.get("poll_seconds", 2.0)),
-        timeout_seconds=int(raw.get("timeout_seconds", 300)),
-    )
-
-
-def _coerce_local_runtime(raw: dict[str, Any]) -> LocalRuntimeConfig:
-    return LocalRuntimeConfig(
-        app_id_prefix=str(raw.get("app_id_prefix", "local-app")),
-        final_state=str(raw.get("final_state", "COMPLETED")),
-        driver_log_template=str(
-            raw.get(
-                "driver_log_template",
-                "Submitted application {app_id} for {app_name} in namespace {namespace}",
-            )
-        ),
-    )
-
-
-def _coerce_spark_history(raw: Any) -> SparkHistoryConfig:
-    if not isinstance(raw, dict):
-        raise SystemExit("Config section spark_history must be a mapping.")
-    backend = str(raw.get("backend", "http"))
-    if backend == "http":
-        http = raw.get("http") or {}
-        base_url = http.get("base_url")
-        if not base_url:
-            raise SystemExit("spark_history.backend=http requires spark_history.http.base_url.")
-        return SparkHistoryConfig(
-            backend=backend,
-            http=HttpHistoryConfig(
-                base_url=str(base_url),
-                timeout_seconds=int(http.get("timeout_seconds", 30)),
-            ),
-            local=None,
-            poll_seconds=float(raw.get("poll_seconds", 2.0)),
-            timeout_seconds=int(raw.get("timeout_seconds", 120)),
-        )
-    if backend == "local":
-        return SparkHistoryConfig(
-            backend=backend,
-            http=None,
-            local=_coerce_local_history(raw.get("local") or {}),
-            poll_seconds=float(raw.get("poll_seconds", 0.1)),
-            timeout_seconds=int(raw.get("timeout_seconds", 5)),
-        )
-    raise SystemExit(f"Unsupported spark_history backend: {backend}")
-
-
-def _coerce_tuning(raw: Any) -> TuningConfig:
-    if raw is None:
-        raw = _default_tuning()
-    if not isinstance(raw, dict):
-        raise SystemExit("Config section tuning must be a mapping.")
-    params_raw = raw.get("params")
-    if not isinstance(params_raw, dict) or not params_raw:
-        raise SystemExit("tuning.params must be a non-empty mapping.")
-    params: dict[str, TuningParamConfig] = {}
-    for name, spec in params_raw.items():
-        if not isinstance(spec, dict):
-            raise SystemExit(f"tuning.params.{name} must be a mapping.")
-        path_value = spec.get("path")
-        if not path_value:
-            raise SystemExit(f"tuning.params.{name} requires path.")
-        if isinstance(path_value, list):
-            path = [str(part) for part in path_value]
+    @field_validator("path", mode="before")
+    @classmethod
+    def normalize_path(cls, value: Any) -> list[str]:
+        if isinstance(value, list):
+            parts = [str(part) for part in value]
         else:
-            path = [part for part in str(path_value).split(".") if part]
-        param_type = str(spec.get("type", "int"))
-        values = _coerce_tuning_param_values(name, spec, param_type)
-        params[str(name)] = TuningParamConfig(
-            path=path,
-            type=param_type,
-            min=spec.get("min"),
-            max=spec.get("max"),
-            values=values,
-            default=spec.get("default"),
-        )
-    constraints = raw.get("constraints") or {}
-    total_memory = (constraints.get("total_memory_gb") or {}).get("max")
-    return TuningConfig(
-        iterations=int(raw.get("iterations", 2)),
-        prompt=str(raw.get("prompt", _default_tuning_prompt())),
-        llm_json_retries=int(raw.get("llm_json_retries", 2)),
-        params=params,
-        total_memory_gb_max=int(total_memory) if total_memory is not None else None,
-    )
+            parts = [part for part in str(value).split(".") if part]
+        if not parts:
+            raise ValueError("path must not be empty.")
+        return parts
 
+    @field_validator("values", mode="before")
+    @classmethod
+    def normalize_values(cls, value: Any) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            values = [item.strip() for item in value.split(",") if item.strip()]
+        elif isinstance(value, list):
+            values = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            raise ValueError("values must be a list or comma-separated string.")
+        return values
 
-def _default_tuning() -> dict[str, Any]:
-    return {
-        "prompt": _default_tuning_prompt(),
-        "llm_json_retries": 2,
-        "params": {
-            "spark.sql.shuffle.partitions": {
-                "path": "spec.sparkConf.spark.sql.shuffle.partitions",
-                "type": "int",
-                "min": 200,
-                "max": 10000,
-            },
-            "executor.cores": {
-                "path": "spec.executor.cores",
-                "type": "int",
-                "min": 1,
-                "max": 16,
-            },
-            "executor.instances": {
-                "path": "spec.executor.instances",
-                "type": "int",
-                "min": 1,
-                "max": 500,
-            },
-            "executor.memory_gb": {
-                "path": "spec.executor.memory",
-                "type": "memory_gb",
-                "min": 1,
-                "max": 256,
-            },
-        },
-        "constraints": {
-            "total_memory_gb": {"max": 500},
-        },
-    }
+    @model_validator(mode="after")
+    def validate_enum_fields(self) -> TuningParamConfig:
+        if self.type == "enum":
+            if not self.values:
+                raise ValueError("enum tuning param requires non-empty values.")
+            if self.min is not None or self.max is not None:
+                raise ValueError("enum tuning param does not support min/max.")
+        elif self.values is not None:
+            raise ValueError("values is only supported for enum tuning params.")
+        return self
 
 
 def _default_tuning_prompt() -> str:
@@ -441,43 +197,78 @@ def _default_tuning_prompt() -> str:
     )
 
 
-def _coerce_local_history(raw: dict[str, Any]) -> LocalHistoryConfig:
-    fixtures_path = raw.get("fixtures_path")
-    if not fixtures_path:
-        raise SystemExit("spark_history.backend=local requires spark_history.local.fixtures_path.")
-    return LocalHistoryConfig(
-        base_url=str(raw.get("base_url", "http://local-history")),
-        fixtures_path=str(fixtures_path),
-        default_app_id=str(raw.get("default_app_id", "local-app-001")),
+def _default_tuning_params() -> dict[str, dict[str, Any]]:
+    return {
+        "spark.sql.shuffle.partitions": {
+            "path": "spec.sparkConf.spark.sql.shuffle.partitions",
+            "type": "int",
+            "min": 200,
+            "max": 10000,
+        },
+        "executor.cores": {
+            "path": "spec.executor.cores",
+            "type": "int",
+            "min": 1,
+            "max": 16,
+        },
+        "executor.instances": {
+            "path": "spec.executor.instances",
+            "type": "int",
+            "min": 1,
+            "max": 500,
+        },
+        "executor.memory_gb": {
+            "path": "spec.executor.memory",
+            "type": "memory_gb",
+            "min": 1,
+            "max": 256,
+        },
+    }
+
+
+class TuningConfig(ConfigModel):
+    iterations: int = 2
+    prompt: str = Field(default_factory=_default_tuning_prompt)
+    llm_json_retries: int = 2
+    params: dict[str, TuningParamConfig] = Field(default_factory=_default_tuning_params)
+    constraints: dict[str, Any] = Field(
+        default_factory=lambda: {"total_memory_gb": {"max": 500}}
     )
 
+    @property
+    def total_memory_gb_max(self) -> int | None:
+        total_memory = (self.constraints.get("total_memory_gb") or {}).get("max")
+        return int(total_memory) if total_memory is not None else None
 
-def _coerce_optional_str(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    return str(value)
+
+class RunConfig(ConfigModel):
+    manifest: str
+    transform: str
+    first_run_mode: Literal["llm", "base", "random"] = "llm"
 
 
-def _coerce_tuning_param_values(
-    name: Any,
-    spec: dict[str, Any],
-    param_type: str,
-) -> list[str] | None:
-    raw_values = spec.get("values")
-    if param_type != "enum":
-        if raw_values is not None:
-            raise SystemExit(f"tuning.params.{name}.values is only supported for type=enum.")
-        return None
-    if raw_values is None:
-        raise SystemExit(f"tuning.params.{name}.type=enum requires non-empty values.")
-    if spec.get("min") is not None or spec.get("max") is not None:
-        raise SystemExit(f"tuning.params.{name}.type=enum does not support min/max.")
-    if isinstance(raw_values, str):
-        values = [item.strip() for item in raw_values.split(",") if item.strip()]
-    elif isinstance(raw_values, list):
-        values = [str(item).strip() for item in raw_values if str(item).strip()]
-    else:
-        raise SystemExit(f"tuning.params.{name}.values must be a list or comma-separated string.")
-    if not values:
-        raise SystemExit(f"tuning.params.{name}.type=enum requires non-empty values.")
-    return values
+class AppConfig(ConfigModel):
+    config_path: Path
+    config_dir: Path
+    run: RunConfig
+    llm: LlmConfig
+    spark_runtime: SparkRuntimeConfig
+    spark_history: SparkHistoryConfig
+    tuning: TuningConfig = Field(default_factory=TuningConfig)
+
+    @classmethod
+    def load(cls, path: str | Path) -> AppConfig:
+        config_path = Path(path).resolve()
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise SystemExit(f"Config at {path} is empty or invalid YAML.")
+        try:
+            return cls.model_validate(
+                {
+                    **raw,
+                    "config_path": config_path,
+                    "config_dir": config_path.parent,
+                }
+            )
+        except ValidationError as exc:
+            raise SystemExit(str(exc)) from exc

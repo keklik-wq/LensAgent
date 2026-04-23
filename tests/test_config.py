@@ -1,31 +1,40 @@
 from pathlib import Path
 
+import pytest
+
 from src.agent_shell.config import AppConfig
 from src.agent_shell.factory import build_llm_client
 from src.agent_shell.ollama import OllamaLlmClient
 
 
-def test_loads_legacy_router_config(tmp_path: Path) -> None:
+def test_loads_router_config(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
-llm_router:
-  base_url: "http://router"
-  chat_path: "/v1/chat/completions"
-  api_key_env: "KEY"
-  model: "m1"
-  timeout_seconds: 10
-  allow_models: ["m1"]
 run:
   manifest: "examples/local/sparkapp.yaml"
   transform: "examples/local/job.py"
   first_run_mode: "base"
+llm:
+  backend: "router"
+  router:
+    base_url: "http://router"
+    chat_path: "/v1/chat/completions"
+    api_key_env: "KEY"
+    model: "m1"
+    timeout_seconds: 10
+    allow_models: ["m1"]
 spark_history:
   backend: "local"
   local:
     fixtures_path: "examples/local/history"
     base_url: "http://history"
     default_app_id: "local-app-001"
+spark_runtime:
+  backend: "kubernetes"
+  kubernetes:
+    kube_context: null
+    kubeconfig_path: null
 """,
         encoding="utf-8",
     )
@@ -42,6 +51,34 @@ spark_history:
     assert cfg.tuning.iterations == 2
     assert "requested_gb_seconds" in cfg.tuning.prompt
     assert cfg.tuning.llm_json_retries == 2
+
+
+def test_rejects_legacy_llm_router_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+run:
+  manifest: "examples/local/sparkapp.yaml"
+  transform: "examples/local/job.py"
+llm_router:
+  base_url: "http://router"
+  api_key_env: "KEY"
+  model: "m1"
+spark_history:
+  backend: "local"
+  local:
+    fixtures_path: "examples/local/history"
+spark_runtime:
+  backend: "kubernetes"
+  kubernetes:
+    kube_context: null
+    kubeconfig_path: null
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="llm"):
+        AppConfig.load(config_path)
 
 
 def test_loads_local_backends_config(tmp_path: Path) -> None:
@@ -157,6 +194,11 @@ spark_history:
     fixtures_path: "examples/local/history"
     base_url: "http://history"
     default_app_id: "local-app-001"
+spark_runtime:
+  backend: "kubernetes"
+  kubernetes:
+    kube_context: null
+    kubeconfig_path: null
 """,
         encoding="utf-8",
     )
