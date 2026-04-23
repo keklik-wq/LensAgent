@@ -98,6 +98,7 @@ class TuningParamConfig:
     type: str
     min: float | int | None
     max: float | int | None
+    values: list[str] | None
     default: object | None
 
 
@@ -333,11 +334,13 @@ def _coerce_tuning(raw: Any) -> TuningConfig:
         else:
             path = [part for part in str(path_value).split(".") if part]
         param_type = str(spec.get("type", "int"))
+        values = _coerce_tuning_param_values(name, spec, param_type)
         params[str(name)] = TuningParamConfig(
             path=path,
             type=param_type,
             min=spec.get("min"),
             max=spec.get("max"),
+            values=values,
             default=spec.get("default"),
         )
     constraints = raw.get("constraints") or {}
@@ -418,3 +421,28 @@ def _coerce_optional_str(value: Any) -> str | None:
     if value in (None, ""):
         return None
     return str(value)
+
+
+def _coerce_tuning_param_values(
+    name: Any,
+    spec: dict[str, Any],
+    param_type: str,
+) -> list[str] | None:
+    raw_values = spec.get("values")
+    if param_type != "enum":
+        if raw_values is not None:
+            raise SystemExit(f"tuning.params.{name}.values is only supported for type=enum.")
+        return None
+    if raw_values is None:
+        raise SystemExit(f"tuning.params.{name}.type=enum requires non-empty values.")
+    if spec.get("min") is not None or spec.get("max") is not None:
+        raise SystemExit(f"tuning.params.{name}.type=enum does not support min/max.")
+    if isinstance(raw_values, str):
+        values = [item.strip() for item in raw_values.split(",") if item.strip()]
+    elif isinstance(raw_values, list):
+        values = [str(item).strip() for item in raw_values if str(item).strip()]
+    else:
+        raise SystemExit(f"tuning.params.{name}.values must be a list or comma-separated string.")
+    if not values:
+        raise SystemExit(f"tuning.params.{name}.type=enum requires non-empty values.")
+    return values
