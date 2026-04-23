@@ -316,6 +316,29 @@ def test_apply_constraints_treats_numeric_string_bounds_as_numeric() -> None:
     assert resolved["spark.sql.shuffle.partitions"] == "2500"
 
 
+def test_apply_constraints_accepts_memory_string_bounds_for_memory_gb_params() -> None:
+    tuning_params = {
+        "executor.memory_gb": main.TuningParamConfig(
+            path=["spec", "executor", "memory"],
+            type="memory_gb",
+            min="1g",
+            max="8g",
+            values=None,
+            default=None,
+        )
+    }
+
+    resolved = main._apply_constraints(
+        params={},
+        base_params={"executor.memory_gb": 4},
+        tuning_params=tuning_params,
+        driver_memory_gb=1,
+        max_total_memory_gb=None,
+    )
+
+    assert resolved["executor.memory_gb"] == 4
+
+
 def test_apply_constraints_rejects_enum_value_outside_allowed_set() -> None:
     tuning_params = {
         "spark.sql.parquet.compression.codec": main.TuningParamConfig(

@@ -53,7 +53,7 @@ tuning:
         - "sparkConf"
         - "spark.sql.shuffle.partitions"
       type: "int"
-      min: 200
+      min: 1
       max: 10000
     executor.cores:
       path: "spec.executor.cores"

@@ -210,6 +210,32 @@ docker compose run --rm lens-agent-standalone
 
 This uses `spark_submit` against a local Spark standalone cluster defined in `docker-compose.yml` and `examples/docker/config.standalone.yaml`.
 
+### Standalone integration test
+
+There is also a Docker-based integration test for the standalone `spark_submit` path:
+
+```bash
+RUN_DOCKER_INTEGRATION=1 python -m pytest -q tests/test_standalone_integration.py
+```
+
+In PowerShell:
+
+```powershell
+$env:RUN_DOCKER_INTEGRATION="1"
+python -m pytest -q tests/test_standalone_integration.py
+```
+
+What it does:
+- starts the `lens-agent-standalone` flow through Docker Compose
+- submits a real Spark job to the local standalone cluster with `spark-submit`
+- waits for the run to finish and checks generated `output/` artifacts
+- verifies that `summary.json` and `run_001.json` were produced and contain a completed Spark application result
+
+Why it is opt-in:
+- it is slower than unit tests
+- it requires Docker Compose and the local container runtime to be working
+- it builds and runs external services instead of using mocks
+
 ## Config Shape
 
 ```yaml
